@@ -30,7 +30,7 @@ std::string narrow(const std::wstring& w);
 bool readFileBytes(const std::string& path, std::vector<uint8_t>& out);
 
 #define EG_MAJOR 1
-#define EG_MINOR 2
+#define EG_MINOR 3
 #define EG_BUG 0
 #define EG_STAGE PF_Stage_RELEASE
 #define EG_BUILD 1
@@ -344,7 +344,7 @@ static PF_Err About(PF_InData* in_data, PF_OutData* out_data) {
 
 static PF_Err GlobalSetup(PF_InData*, PF_OutData* out_data) {
     out_data->my_version = PF_VERSION(EG_MAJOR, EG_MINOR, EG_BUG, EG_STAGE, EG_BUILD);
-    out_data->out_flags = PF_OutFlag_I_DO_DIALOG | PF_OutFlag_DEEP_COLOR_AWARE * 0;
+    out_data->out_flags = PF_OutFlag_I_DO_DIALOG | PF_OutFlag_CUSTOM_UI;
     out_data->out_flags2 = PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG | PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
     return PF_Err_NONE;
 }
@@ -608,7 +608,12 @@ extern "C" __declspec(dllexport) PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_dat
         case PF_Cmd_ABOUT: err = About(in_data, out_data); break;
         case PF_Cmd_GLOBAL_SETUP: err = GlobalSetup(in_data, out_data); break;
         case PF_Cmd_PARAMS_SETUP: err = ParamsSetup(in_data, out_data); break;
-        case PF_Cmd_SEQUENCE_SETUP: out_data->out_flags |= PF_OutFlag_SEND_DO_DIALOG; break;
+        case PF_Cmd_SEQUENCE_SETUP:
+            // After Effects ignores scene changes made from the options dialog, so there the
+            // Scene Setup button is the way in. Premiere opens Scene Setup straight away.
+            if (in_data->appl_id != 'FXTC') out_data->out_flags |= PF_OutFlag_SEND_DO_DIALOG;
+            break;
+        case PF_Cmd_EVENT: break;  // no custom drawing; the Scene param is hidden from Effect Controls
         case PF_Cmd_RENDER: err = Render(in_data, out_data, params, output); break;
         case PF_Cmd_DO_DIALOG: err = RunSetup(in_data, out_data, params); break;
         case PF_Cmd_USER_CHANGED_PARAM: {
