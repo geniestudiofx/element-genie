@@ -1,0 +1,9 @@
+build/
+ext/*
+!ext/glad/
+*.o
+*.aex
+*.exe
+plugin/*.rr
+plugin/*.rrc
+plugin/*.rc
