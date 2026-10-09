@@ -18,6 +18,8 @@ Build 3D text, logos and models without leaving your edit. Drop the effect on an
 - Import OBJ, FBX, glTF / GLB models, plus 18 built-in icons and 9 shapes
 - Soft shadows, ambient occlusion, floor reflections, glow, anti-aliasing and motion blur
 - 5 groups you can animate in Effect Controls, plus camera orbit, zoom and letter-by-letter build
+- **Per Letter** controls: rotate, move and scale every letter on its own, with ramp, wave and random spreads
+- **Twist** deform along X, Y or Z, keyframeable
 
 ## Download
 
