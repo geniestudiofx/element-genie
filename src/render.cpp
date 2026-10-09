@@ -27,7 +27,7 @@ std::shared_ptr<Texture> uploadTexture(const ImageData& img, bool srgb, bool mip
     GLint wrap = clampEdge ? GL_CLAMP_TO_EDGE : GL_REPEAT;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrap);
-    if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) glTexParameterf(GL_TEXTURE_2D, 0x84FE, 8.f);
+    if (GLAD_GL_EXT_texture_filter_anisotropic || GLAD_GL_ARB_texture_filter_anisotropic) glTexParameterf(GL_TEXTURE_2D, 0x84FE, 16.f);
     t->w = img.w; t->h = img.h;
     return t;
 }
@@ -436,6 +436,21 @@ void main(){ vec2 t = 1.0/vec2(textureSize(tSrc,0));
   s += texture(tSrc, vUV+t*vec2(-1,-1)).rgb + texture(tSrc, vUV+t*vec2(1,-1)).rgb + texture(tSrc, vUV+t*vec2(-1,1)).rgb + texture(tSrc, vUV+t*vec2(1,1)).rgb;
   oCol = vec4(s/16.0, 1.0); }
 )";
+// Tone-aware MSAA resolve: bright HDR samples are weighted down so edges against dark
+// backgrounds stay smooth after tonemapping (a plain average leaves hard, stair-stepped edges).
+static const char* FS_RESOLVE = R"(#version 330 core
+out vec4 oCol; uniform sampler2DMS tMS; uniform int uS;
+void main(){
+  ivec2 p = ivec2(gl_FragCoord.xy);
+  vec3 acc = vec3(0.0); float ws = 0.0, a = 0.0;
+  for (int i = 0; i < uS; i++) {
+    vec4 c = texelFetch(tMS, p, i);
+    float w = 1.0 / (1.0 + max(max(c.r, c.g), c.b));
+    acc += c.rgb * w; ws += w; a += c.a;
+  }
+  oCol = vec4(acc / max(ws, 1e-6), a / float(uS));
+}
+)";
 static const char* FS_ACCUM = R"(#version 330 core
 in vec2 vUV; out vec4 oCol; uniform sampler2D tSrc; uniform float uW;
 void main(){ oCol = texture(tSrc, vUV)*uW; }
@@ -496,6 +511,7 @@ bool Renderer::init(std::string& err) {
     progDown = compile(VS_FULL, FS_DOWN, err, "down");
     progUp = compile(VS_FULL, FS_UP, err, "up");
     progAccum = compile(VS_FULL, FS_ACCUM, err, "accum");
+    progResolve = compile(VS_FULL, FS_RESOLVE, err, "resolve");
     progTonemap = compile(VS_FULL, FS_TONEMAP, err, "tonemap");
     progBlitPremul = compile(VS_FULL, FS_BLIT, err, "blit");
     glGenVertexArrays(1, &emptyVao);
@@ -733,6 +749,12 @@ mat4 glyphMatrix(const Object& o, int g, int n, float f, float& opacity) {
 
 CamEval evalCamera(const Scene& s, float f, float aspect) {
     CamEval c;
+    if (s.camOv) {
+        c.pos = s.camOvPos;
+        c.view = glm::lookAt(c.pos, c.pos + s.camOvFwd, s.camOvUp);
+        c.proj = glm::perspective(glm::radians(std::clamp(s.camOvFov, 1.f, 170.f)), aspect, 0.03f, 2000.f);
+        return c;
+    }
     c.pos = s.cam.pos.eval(f);
     vec3 tg = s.cam.target.eval(f);
     if (glm::length(tg - c.pos) < 1e-4f) tg = c.pos + vec3(0, 0, -1);
@@ -763,7 +785,8 @@ bool worldBounds(const Scene& s, float f, vec3& mn, vec3& mx) {
 // ============================================================ render targets
 void RenderTarget::release() {
     GLuint fb[] = {msFbo, hdrFbo, outFbo, accFbo, ndFbo, aoFbo, ao2Fbo}; glDeleteFramebuffers(7, fb);
-    GLuint rb[] = {msColor, msDepth, ndDepth}; glDeleteRenderbuffers(3, rb);
+    if (msColor) glDeleteTextures(1, &msColor);
+    GLuint rb[] = {msDepth, ndDepth}; glDeleteRenderbuffers(2, rb);
     GLuint tx[] = {hdrTex, outTex, accTex, ndTex, aoTex, ao2Tex}; glDeleteTextures(6, tx);
     glDeleteFramebuffers(6, bloomFbo); glDeleteTextures(6, bloomTex);
     *this = RenderTarget();
@@ -784,12 +807,14 @@ void RenderTarget::ensure(int W, int H, int S) {
     if (W == w && H == h && S == samples && outFbo) return;
     release();
     w = W; h = H; samples = S;
-    glGenRenderbuffers(1, &msColor); glBindRenderbuffer(GL_RENDERBUFFER, msColor);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER, S, GL_RGBA16F, w, h);
+    int TS = std::max(1, S);
+    glGenTextures(1, &msColor); glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, msColor);
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, TS, GL_RGBA16F, w, h, GL_TRUE);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
     glGenRenderbuffers(1, &msDepth); glBindRenderbuffer(GL_RENDERBUFFER, msDepth);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER, S, GL_DEPTH_COMPONENT24, w, h);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, TS, GL_DEPTH_COMPONENT24, w, h);
     glGenFramebuffers(1, &msFbo); glBindFramebuffer(GL_FRAMEBUFFER, msFbo);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, msColor);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, msColor, 0);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, msDepth);
     makeTex(hdrTex, GL_RGBA16F, w, h, GL_FLOAT); fboFor(hdrFbo, hdrTex);
     makeTex(accTex, GL_RGBA16F, w, h, GL_FLOAT); fboFor(accFbo, accTex);
@@ -1095,9 +1120,14 @@ void Renderer::renderPass(Scene& s, float f, RenderTarget& rt, const ViewOptions
     glDepthMask(GL_TRUE);
     glDisable(GL_BLEND);
     // resolve
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, rt.msFbo);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, rt.hdrFbo);
-    glBlitFramebuffer(0, 0, rt.w, rt.h, 0, 0, rt.w, rt.h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_FRAMEBUFFER, rt.hdrFbo); glViewport(0, 0, rt.w, rt.h);
+    glDisable(GL_DEPTH_TEST);
+    glUseProgram(progResolve);
+    glUniform1i(U(progResolve, "tMS"), 0); glUniform1i(U(progResolve, "uS"), std::max(1, rt.samples));
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, rt.msColor);
+    drawFullscreen();
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+    glEnable(GL_DEPTH_TEST);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 

@@ -159,6 +159,10 @@ struct Scene {
     float refOpacity = 1.f;
     int nextId = 1;
     RenderQuality quality;
+    // runtime: camera supplied by the host (After Effects comp camera)
+    bool camOv = false;
+    glm::vec3 camOvPos{0}, camOvFwd{0, 0, -1}, camOvUp{0, 1, 0};
+    float camOvFov = 35.f;
 };
 
 void sceneDefaults(Scene& s);

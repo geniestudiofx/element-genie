@@ -6,7 +6,7 @@
 
 struct RenderTarget {
     int w = 0, h = 0, samples = 0;
-    unsigned msFbo = 0, msColor = 0, msDepth = 0;     // multisampled HDR
+    unsigned msFbo = 0, msColor = 0, msDepth = 0;     // multisampled HDR (msColor is a multisample texture)
     unsigned hdrFbo = 0, hdrTex = 0;                   // resolved HDR
     unsigned outFbo = 0, outTex = 0;                   // final RGBA8, premultiplied, sRGB encoded
     unsigned accFbo = 0, accTex = 0;                   // motion blur accumulation (HDR)
@@ -46,7 +46,7 @@ public:
 private:
     unsigned progPBR = 0, progShadow = 0, progCatcher = 0, progEnv = 0, progPrefilter = 0, progEquirect = 0;
     unsigned progTonemap = 0, progBright = 0, progDown = 0, progUp = 0, progLines = 0, progAccum = 0;
-    unsigned progPrepass = 0, progSSAO = 0, progAOBlur = 0;
+    unsigned progPrepass = 0, progSSAO = 0, progAOBlur = 0, progResolve = 0;
     bool prepassMode = false, reflectPass = false;
     glm::mat4 extraM{1.f};
     float groundYCur = 0, depthRangeCur = 1, texPerWorldCur = 1;

@@ -62,4 +62,6 @@ void applyFx(Scene& s, const FxParams& p) {
     s.reflection.enabled = p.reflection;
     s.reflection.strength = std::clamp(p.reflStrength / 100.f, 0.f, 1.f);
     s.reflection.fade = std::max(0.02f, p.reflFade / 100.f);
+    s.camOv = p.aeCam;
+    if (p.aeCam) { s.camOvPos = p.aePos; s.camOvFwd = p.aeFwd; s.camOvUp = p.aeUp; s.camOvFov = p.aeFov; }
 }

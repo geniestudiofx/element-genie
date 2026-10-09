@@ -32,6 +32,10 @@ struct FxParams {
     int twistAxis = 0;           // 0 X, 1 Y, 2 Z
     float twistOffset = 0;       // % shifts where the twist is centred
     int twistTarget = 0;         // 0 all groups, 1-5 group
+    // After Effects comp camera (already converted to scene units)
+    bool aeCam = false;
+    glm::vec3 aePos{0}, aeFwd{0, 0, -1}, aeUp{0, 1, 0};
+    float aeFov = 35;
 };
 
 // Applies Effect Controls values on top of the scene designed in Scene Setup.

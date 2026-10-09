@@ -6,6 +6,7 @@
 #include "AE_EffectCB.h"
 #include "AE_Macros.h"
 #include "Param_Utils.h"
+#include "AE_GeneralPlug.h"
 #include <windows.h>
 #include <glad/gl.h>
 #include <string>
@@ -30,7 +31,7 @@ std::string narrow(const std::wstring& w);
 bool readFileBytes(const std::string& path, std::vector<uint8_t>& out);
 
 #define EG_MAJOR 1
-#define EG_MINOR 4
+#define EG_MINOR 6
 #define EG_BUG 0
 #define EG_STAGE PF_Stage_RELEASE
 #define EG_BUILD 1
@@ -47,7 +48,8 @@ enum {
     P_REAL = P_REND + 6, // topic + 12 + end
     P_LET = P_REAL + 14,  // topic, rx, ry, rz, px, py, pz, scale, spread, wave offset, randomness, apply to, end
     P_DEF = P_LET + 13,   // topic, twist, axis, offset, apply to, end
-    P_NUM = P_DEF + 6
+    P_AE = P_DEF + 6,     // topic, use comp camera, world scale, end
+    P_NUM = P_AE + 4
 };
 enum { G_TOPIC = 0, G_PX, G_PY, G_PZ, G_RX, G_RY, G_RZ, G_SCALE, G_OPACITY, G_END };
 
@@ -347,7 +349,7 @@ static PF_Err About(PF_InData* in_data, PF_OutData* out_data) {
 static PF_Err GlobalSetup(PF_InData*, PF_OutData* out_data) {
     out_data->my_version = PF_VERSION(EG_MAJOR, EG_MINOR, EG_BUG, EG_STAGE, EG_BUILD);
     out_data->out_flags = PF_OutFlag_I_DO_DIALOG | PF_OutFlag_CUSTOM_UI;
-    out_data->out_flags2 = PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG | PF_OutFlag2_SUPPORTS_THREADED_RENDERING;
+    out_data->out_flags2 = PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG | PF_OutFlag2_SUPPORTS_THREADED_RENDERING | PF_OutFlag2_I_USE_3D_CAMERA;
     return PF_Err_NONE;
 }
 
@@ -432,6 +434,11 @@ static PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_FLOAT_SLIDERX("Twist Offset", -200, 200, -100, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
     PF_ADD_POPUPX("Twist Applies To", 6, 1, "All groups|Group 1|Group 2|Group 3|Group 4|Group 5", 0, id++);
     AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    // After Effects: follow the comp's 3D camera
+    PF_ADD_TOPICX("After Effects 3D", PF_ParamFlag_START_COLLAPSED, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_CHECKBOXX("Use Comp Camera", TRUE, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("World Scale", 1, 10000, 10, 400, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
     out_data->num_params = P_NUM;
     return PF_Err_NONE;
 }
@@ -483,6 +490,55 @@ static FxParams readFx(PF_ParamDef* params[]) {
     p.twistOffset = (float)params[P_DEF + 3]->u.fs_d.value;
     p.twistTarget = std::clamp((int)params[P_DEF + 4]->u.pd.value - 1, 0, 5);
     return p;
+}
+
+// After Effects: read the comp's active 3D camera and convert it to scene units.
+// AE space: pixels, x right, y down, z away from viewer, origin top-left of the comp.
+// Scene space: comp centre at the origin, y up, z toward viewer, 1 unit = comp height / 4 * scale.
+static bool readAECamera(PF_InData* in_data, float worldScalePct, FxParams& fx) {
+    if (in_data->appl_id != 'FXTC' || !in_data->pica_basicP || !in_data->effect_ref) return false;
+    SPBasicSuite* sp = in_data->pica_basicP;
+    const AEGP_PFInterfaceSuite1* pfi = nullptr; const AEGP_LayerSuite5* ls = nullptr;
+    const AEGP_StreamSuite2* ss = nullptr; const AEGP_CompSuite4* cs = nullptr; const AEGP_ItemSuite6* is = nullptr;
+    bool ok = false;
+    if (sp->AcquireSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1, (const void**)&pfi) || !pfi) return false;
+    sp->AcquireSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5, (const void**)&ls);
+    sp->AcquireSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion2, (const void**)&ss);
+    sp->AcquireSuite(kAEGPCompSuite, kAEGPCompSuiteVersion4, (const void**)&cs);
+    sp->AcquireSuite(kAEGPItemSuite, kAEGPItemSuiteVersion6, (const void**)&is);
+    if (ls && ss) {
+        A_Time t = {0, 1};
+        AEGP_LayerH cam = nullptr, me = nullptr;
+        if (!pfi->AEGP_ConvertEffectToCompTime(in_data->effect_ref, in_data->current_time, in_data->time_scale, &t) &&
+            !pfi->AEGP_GetEffectCamera(in_data->effect_ref, &t, &cam) && cam) {
+            A_Matrix4 m; AEGP_StreamVal zoom; AEFX_CLR_STRUCT(zoom);
+            if (!ls->AEGP_GetLayerToWorldXform(cam, &t, &m) &&
+                !ss->AEGP_GetLayerStreamValue(cam, AEGP_LayerStream_ZOOM, AEGP_LTimeMode_CompTime, &t, FALSE, &zoom, nullptr)) {
+                double W = in_data->width, H = in_data->height;
+                if (cs && is && !pfi->AEGP_GetEffectLayer(in_data->effect_ref, &me) && me) {
+                    AEGP_CompH comp = nullptr; AEGP_ItemH item = nullptr; A_long cw = 0, ch = 0;
+                    if (!ls->AEGP_GetLayerParentComp(me, &comp) && comp && !cs->AEGP_GetItemFromComp(comp, &item) && item &&
+                        !is->AEGP_GetItemDimensions(item, &cw, &ch) && cw > 0 && ch > 0) { W = cw; H = ch; }
+                }
+                double u = H / 4.0 * 100.0 / std::max(1.0, (double)worldScalePct);
+                auto axis = [&](int r) { glm::dvec3 a(m.mat[r][0], m.mat[r][1], m.mat[r][2]); double l = glm::length(a); return l > 1e-9 ? a / l : a; };
+                glm::dvec3 X = axis(0), Y = axis(1), Z = axis(2);
+                glm::dvec3 P(m.mat[3][0], m.mat[3][1], m.mat[3][2]);
+                fx.aePos = glm::vec3((float)((P.x - W / 2) / u), (float)(-(P.y - H / 2) / u), (float)(-P.z / u));
+                fx.aeFwd = glm::vec3((float)Z.x, (float)-Z.y, (float)-Z.z);
+                fx.aeUp = glm::vec3((float)-Y.x, (float)Y.y, (float)Y.z);
+                double zv = zoom.one_d > 1 ? zoom.one_d : 1;
+                fx.aeFov = (float)glm::degrees(2.0 * std::atan(H / 2.0 / zv));
+                fx.aeCam = true; ok = true;
+            }
+        }
+    }
+    if (is) sp->ReleaseSuite(kAEGPItemSuite, kAEGPItemSuiteVersion6);
+    if (cs) sp->ReleaseSuite(kAEGPCompSuite, kAEGPCompSuiteVersion4);
+    if (ss) sp->ReleaseSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion2);
+    if (ls) sp->ReleaseSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5);
+    sp->ReleaseSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+    return ok;
 }
 
 static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output) {
@@ -541,6 +597,15 @@ static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* para
         bool moving = false;
         for (size_t i = 1; i < j.blur.size() && !moving; i++) moving = memcmp(&j.blur[i], &j.blur[0], sizeof(FxParams)) != 0;
         if (!moving) j.blur.clear();
+    }
+    // After Effects comp camera
+    if (params[P_AE + 1]->u.bd.value) {
+        FxParams cam;
+        if (readAECamera(in_data, (float)params[P_AE + 2]->u.fs_d.value, cam)) {
+            auto copyCam = [&](FxParams& d) { d.aeCam = true; d.aePos = cam.aePos; d.aeFwd = cam.aeFwd; d.aeUp = cam.aeUp; d.aeFov = cam.aeFov; };
+            copyCam(j.fx);
+            for (auto& b : j.blur) copyCam(b);
+        }
     }
     j.in = sameSize ? (const uint8_t*)input->data : nullptr; j.inRB = sameSize ? input->rowbytes : 0;
     j.out = (uint8_t*)output->data; j.outRB = output->rowbytes;
