@@ -76,8 +76,24 @@ std::shared_ptr<Geometry> uploadGeometry(BuildResult& r) {
 static const char* VS_MESH = R"(#version 330 core
 layout(location=0) in vec3 aP; layout(location=1) in vec3 aN; layout(location=2) in vec2 aUV;
 uniform mat4 uM, uVP; uniform mat3 uNM;
+uniform float uTwist; uniform int uTwistAxis; uniform vec3 uTwistC; uniform vec2 uTwistRange;
 out vec3 vP; out vec3 vN; out vec2 vUV;
-void main(){ vec4 w = uM*vec4(aP,1.0); vP = w.xyz; vN = uNM*aN; vUV = aUV; gl_Position = uVP*w; }
+vec3 twistV(vec3 v, float a){
+  float c = cos(a), s = sin(a);
+  if (uTwistAxis == 0) return vec3(v.x, c*v.y - s*v.z, s*v.y + c*v.z);
+  if (uTwistAxis == 1) return vec3(c*v.x + s*v.z, v.y, -s*v.x + c*v.z);
+  return vec3(c*v.x - s*v.y, s*v.x + c*v.y, v.z);
+}
+void main(){
+  vec3 p = aP, n = aN;
+  if (uTwist != 0.0) {
+    float along = uTwistAxis == 0 ? p.x : uTwistAxis == 1 ? p.y : p.z;
+    float a = uTwist * ((along - uTwistRange.x) / max(uTwistRange.y, 1e-5) - 0.5);
+    p = twistV(p - uTwistC, a) + uTwistC;
+    n = twistV(n, a);
+  }
+  vec4 w = uM*vec4(p,1.0); vP = w.xyz; vN = uNM*n; vUV = aUV; gl_Position = uVP*w;
+}
 )";
 
 static const char* FS_PBR = R"(#version 330 core
@@ -664,10 +680,10 @@ mat4 objectMatrix(const Object& o, float f) {
 
 static float hash01(int i) { unsigned x = (unsigned)i * 2654435761u; x ^= x >> 13; x *= 0x5bd1e995; x ^= x >> 15; return (x & 0xffff) / 65535.f; }
 
-mat4 glyphMatrix(const Object& o, int g, int n, float f, float& opacity) {
+static mat4 letterAnimMatrix(const Object& o, int g, int n, float f, float& opacity) {
     opacity = 1.f;
     const LetterAnim& la = o.letters;
-    if (!la.enabled || g < 0 || !o.geo || g >= (int)o.geo->glyphCenters.size()) return mat4(1);
+    if (!la.enabled) return mat4(1);
     float k;
     switch (la.order) {
     case 1: k = (float)(n - 1 - g); break;
@@ -685,6 +701,34 @@ mat4 glyphMatrix(const Object& o, int g, int n, float f, float& opacity) {
     float sc = glm::mix(1.f, la.offScale, amt);
     if (la.fade) opacity = 1.f - amt;
     return glm::translate(mat4(1), c + la.offPos * amt) * glm::eulerAngleYXZ(r.y, r.x, r.z) * glm::scale(mat4(1), vec3(sc)) * glm::translate(mat4(1), -c);
+}
+
+// Per-letter transform from Effect Controls: each letter turns / moves / scales around its own centre.
+static mat4 letterFxMatrix(const Object& o, int g, int n) {
+    if (!o.lfOn) return mat4(1);
+    float u = n > 1 ? (float)g / (n - 1) : 0.f;
+    float w;
+    switch (o.lfSpread) {
+    case 1: w = u; break;                                              // ramp left -> right
+    case 2: w = 1.f - u; break;                                        // ramp right -> left
+    case 3: w = 1.f - std::fabs(u * 2.f - 1.f); break;                 // centre out
+    case 4: w = std::sin(glm::radians(o.lfPhase) + u * 6.2831853f); break;  // wave
+    case 5: w = hash01(g * 7 + 3) * 2.f - 1.f; break;                  // random
+    default: w = 1.f;
+    }
+    vec3 rnd(hash01(g * 13 + 1) * 2.f - 1.f, hash01(g * 29 + 5) * 2.f - 1.f, hash01(g * 41 + 9) * 2.f - 1.f);
+    vec3 wr = glm::mix(vec3(w), rnd, o.lfRandom);
+    vec3 c = o.geo->glyphCenters[g];
+    vec3 r = glm::radians(o.lfRot * wr);
+    vec3 t = o.lfPos * wr;
+    float sc = std::max(0.f, glm::mix(1.f, o.lfScale, glm::mix(w, rnd.x * .5f + .5f, o.lfRandom)));
+    return glm::translate(mat4(1), c + t) * glm::eulerAngleYXZ(r.y, r.x, r.z) * glm::scale(mat4(1), vec3(sc)) * glm::translate(mat4(1), -c);
+}
+
+mat4 glyphMatrix(const Object& o, int g, int n, float f, float& opacity) {
+    opacity = 1.f;
+    if (g < 0 || !o.geo || g >= (int)o.geo->glyphCenters.size()) return mat4(1);
+    return letterAnimMatrix(o, g, n, f, opacity) * letterFxMatrix(o, g, n);
 }
 
 CamEval evalCamera(const Scene& s, float f, float aspect) {
@@ -841,6 +885,16 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
     for (auto& it : items) {
         const Object& o = *it.o; const Part& p = *it.p;
         glUniformMatrix4fv(U(prog, "uM"), 1, GL_FALSE, glm::value_ptr(it.M));
+        {
+            int ax = std::clamp(o.twistAxis, 0, 2);
+            vec3 bmn = o.geo->bmin, bmx = o.geo->bmax, ctr = (bmn + bmx) * .5f;
+            float len = bmx[ax] - bmn[ax];
+            float start = bmn[ax] - o.twistOffset * len;
+            glUniform1f(U(prog, "uTwist"), glm::radians(o.twist));
+            glUniform1i(U(prog, "uTwistAxis"), ax);
+            glUniform3fv(U(prog, "uTwistC"), 1, glm::value_ptr(ctr));
+            glUniform2f(U(prog, "uTwistRange"), start, len);
+        }
         if (prepassMode) {
             mat3 NM = glm::transpose(glm::inverse(mat3(it.M)));
             glUniformMatrix3fv(U(prog, "uNM"), 1, GL_FALSE, glm::value_ptr(NM));

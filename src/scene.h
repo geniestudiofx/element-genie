@@ -76,6 +76,14 @@ struct Object {
     glm::mat4 parentM{1.f};  // group transform from Effect Controls
     float opacityMul = 1.f;
     float letterFrame = -1;  // >= 0: letter animation evaluated at this pseudo-frame
+    // per-letter transform from Effect Controls
+    bool lfOn = false;
+    glm::vec3 lfRot{0}, lfPos{0};
+    float lfScale = 1.f, lfPhase = 0.f, lfRandom = 0.f;
+    int lfSpread = 0;
+    // twist deform from Effect Controls
+    float twist = 0.f, twistOffset = 0.f;
+    int twistAxis = 0;
     std::shared_ptr<Geometry> geo;
     std::string geoKey;
     std::string geoError;

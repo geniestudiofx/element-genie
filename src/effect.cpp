@@ -24,6 +24,12 @@ void applyFx(Scene& s, const FxParams& p) {
         vec3 r = glm::radians(g.rot);
         o.parentM = glm::translate(mat4(1), g.pos) * glm::eulerAngleYXZ(r.y, r.x, r.z) * glm::scale(mat4(1), vec3(std::max(0.f, g.scale) / 100.f));
         o.opacityMul = std::clamp(g.opacity / 100.f, 0.f, 1.f);
+        bool lt = p.lTarget == 0 || p.lTarget - 1 == o.group;
+        o.lfOn = lt && (glm::length(p.lRot) > 1e-4f || glm::length(p.lPos) > 1e-6f || std::fabs(p.lScale - 100.f) > 1e-3f);
+        o.lfRot = p.lRot; o.lfPos = p.lPos; o.lfScale = std::max(0.f, p.lScale) / 100.f;
+        o.lfSpread = p.lSpread; o.lfPhase = p.lPhase; o.lfRandom = std::clamp(p.lRandom / 100.f, 0.f, 1.f);
+        bool tt = p.twistTarget == 0 || p.twistTarget - 1 == o.group;
+        o.twist = tt ? p.twist : 0.f; o.twistAxis = p.twistAxis; o.twistOffset = p.twistOffset / 100.f;
     }
     setLetterFrames(s, p.letters);
     // camera: orbit / tilt / zoom / pan on top of the Scene Setup camera

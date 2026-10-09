@@ -30,7 +30,7 @@ std::string narrow(const std::wstring& w);
 bool readFileBytes(const std::string& path, std::vector<uint8_t>& out);
 
 #define EG_MAJOR 1
-#define EG_MINOR 3
+#define EG_MINOR 4
 #define EG_BUG 0
 #define EG_STAGE PF_Stage_RELEASE
 #define EG_BUILD 1
@@ -45,7 +45,9 @@ enum {
     P_ANIM = P_CAM + 9, // topic, letters, envrot, light, glow, end
     P_REND = P_ANIM + 6, // topic, composite, motion blur, shutter, quality, end
     P_REAL = P_REND + 6, // topic + 12 + end
-    P_NUM = P_REAL + 14
+    P_LET = P_REAL + 14,  // topic, rx, ry, rz, px, py, pz, scale, spread, wave offset, randomness, apply to, end
+    P_DEF = P_LET + 13,   // topic, twist, axis, offset, apply to, end
+    P_NUM = P_DEF + 6
 };
 enum { G_TOPIC = 0, G_PX, G_PY, G_PZ, G_RX, G_RY, G_RZ, G_SCALE, G_OPACITY, G_END };
 
@@ -409,6 +411,27 @@ static PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_FLOAT_SLIDERX("Reflection Strength", 0, 100, 0, 100, 35, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
     PF_ADD_FLOAT_SLIDERX("Reflection Fade", 1, 1000, 5, 300, 80, 1, 0, 0, id++);
     AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    // per letter: turn / move / scale every letter around its own centre (text only)
+    PF_ADD_TOPICX("Per Letter", PF_ParamFlag_START_COLLAPSED, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Letter Rotation X", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Letter Rotation Y", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Letter Rotation Z", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Letter Position X", -10000, 10000, -5, 5, 0, 2, 0, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Letter Position Y", -10000, 10000, -5, 5, 0, 2, 0, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Letter Position Z", -10000, 10000, -5, 5, 0, 2, 0, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Letter Scale", 0, 10000, 0, 400, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_POPUPX("Spread", 6, 1, "Same for every letter|Ramp left to right|Ramp right to left|Centre out|Wave|Random", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Wave Offset", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Randomness", 0, 100, 0, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_POPUPX("Letters In", 6, 1, "All groups|Group 1|Group 2|Group 3|Group 4|Group 5", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    // deform
+    PF_ADD_TOPICX("Deform", PF_ParamFlag_START_COLLAPSED, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Twist", 0, id++);
+    PF_ADD_POPUPX("Twist Axis", 3, 1, "X (left to right)|Y (bottom to top)|Z (front to back)", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Twist Offset", -200, 200, -100, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_POPUPX("Twist Applies To", 6, 1, "All groups|Group 1|Group 2|Group 3|Group 4|Group 5", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
     out_data->num_params = P_NUM;
     return PF_Err_NONE;
 }
@@ -448,6 +471,17 @@ static FxParams readFx(PF_ParamDef* params[]) {
     p.reflection = params[P_REAL + 10]->u.bd.value != 0;
     p.reflStrength = (float)params[P_REAL + 11]->u.fs_d.value;
     p.reflFade = (float)params[P_REAL + 12]->u.fs_d.value;
+    p.lRot = glm::vec3((float)FIX_2_FLOAT(params[P_LET + 1]->u.ad.value), (float)FIX_2_FLOAT(params[P_LET + 2]->u.ad.value), (float)FIX_2_FLOAT(params[P_LET + 3]->u.ad.value));
+    p.lPos = glm::vec3((float)params[P_LET + 4]->u.fs_d.value, (float)params[P_LET + 5]->u.fs_d.value, (float)params[P_LET + 6]->u.fs_d.value);
+    p.lScale = (float)params[P_LET + 7]->u.fs_d.value;
+    p.lSpread = std::clamp((int)params[P_LET + 8]->u.pd.value - 1, 0, 5);
+    p.lPhase = (float)FIX_2_FLOAT(params[P_LET + 9]->u.ad.value);
+    p.lRandom = (float)params[P_LET + 10]->u.fs_d.value;
+    p.lTarget = std::clamp((int)params[P_LET + 11]->u.pd.value - 1, 0, 5);
+    p.twist = (float)FIX_2_FLOAT(params[P_DEF + 1]->u.ad.value);
+    p.twistAxis = std::clamp((int)params[P_DEF + 2]->u.pd.value - 1, 0, 2);
+    p.twistOffset = (float)params[P_DEF + 3]->u.fs_d.value;
+    p.twistTarget = std::clamp((int)params[P_DEF + 4]->u.pd.value - 1, 0, 5);
     return p;
 }
 
@@ -491,7 +525,8 @@ static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* para
             A_long t = in_data->current_time + (A_long)std::lround(off * in_data->time_step);
             bool ok = true;
             for (int k = 0; k < P_NUM; k++) tmp[k] = params[k];
-            for (int k = P_G0; k < P_REND; k++) {
+            for (int k = P_G0; k < P_NUM; k++) {
+                if (k >= P_REND && k < P_LET) continue;
                 PF_ParamType ty = params[k]->param_type;
                 if (ty != PF_Param_FLOAT_SLIDER && ty != PF_Param_ANGLE) continue;
                 AEFX_CLR_STRUCT(defs[k]);
@@ -499,7 +534,7 @@ static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* para
                 tmp[k] = &defs[k];
             }
             if (ok) j.blur.push_back(readFx(tmp));
-            for (int k = P_G0; k < P_REND; k++) if (tmp[k] == &defs[k]) PF_CHECKIN_PARAM(in_data, &defs[k]);
+            for (int k = P_G0; k < P_NUM; k++) if (tmp[k] == &defs[k]) PF_CHECKIN_PARAM(in_data, &defs[k]);
             if (!ok) { j.blur.clear(); break; }
         }
         // nothing moving? skip the extra renders

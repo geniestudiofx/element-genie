@@ -20,6 +20,18 @@ struct FxParams {
     bool floorShadow = false; float shadowSoft = 30, shadowDark = 55;
     bool ao = true; float aoStrength = 100, aoRadius = 35;
     bool reflection = true; float reflStrength = 35, reflFade = 80;
+    // per letter (text only)
+    glm::vec3 lRot{0}, lPos{0};  // degrees, units
+    float lScale = 100;          // %
+    int lSpread = 0;             // 0 same, 1 ramp L->R, 2 ramp R->L, 3 centre out, 4 wave, 5 random
+    float lPhase = 0;            // degrees (wave offset)
+    float lRandom = 0;           // %
+    int lTarget = 0;             // 0 all groups, 1-5 group
+    // twist deform
+    float twist = 0;             // degrees across the object
+    int twistAxis = 0;           // 0 X, 1 Y, 2 Z
+    float twistOffset = 0;       // % shifts where the twist is centred
+    int twistTarget = 0;         // 0 all groups, 1-5 group
 };
 
 // Applies Effect Controls values on top of the scene designed in Scene Setup.
