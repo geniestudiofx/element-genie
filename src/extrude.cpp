@@ -26,6 +26,7 @@ struct Poly {
 };
 
 // ------------------------------------------------------------------ embedded fonts
+#include "fonts_cine.h"
 extern const unsigned char g_font_inter_bold[]; extern const unsigned g_font_inter_bold_size;
 extern const unsigned char g_font_inter_black[]; extern const unsigned g_font_inter_black_size;
 extern const unsigned char g_font_inter_regular[]; extern const unsigned g_font_inter_regular_size;
@@ -35,6 +36,8 @@ static bool fontBytes(const std::string& font, std::vector<uint8_t>& out) {
     const unsigned char* p = g_font_inter_bold; unsigned n = g_font_inter_bold_size;
     if (font == "builtin:Inter Black") { p = g_font_inter_black; n = g_font_inter_black_size; }
     if (font == "builtin:Inter Regular") { p = g_font_inter_regular; n = g_font_inter_regular_size; }
+    for (int i = 0; i < g_cine_font_count; i++)
+        if (font == std::string("builtin:") + g_cine_fonts[i].name) { p = g_cine_fonts[i].data; n = g_cine_fonts[i].size; }
     out.assign(p, p + n);
     return true;
 }
@@ -120,6 +123,27 @@ static Contour insetContour(const Contour& c, double d) {
     return o;
 }
 
+// true if insetting by d keeps every edge pointing the same way and the outline free of crossings
+static bool insetIsClean(const Contour& c, double d) {
+    Contour o = insetContour(c, d);
+    size_t n = c.size();
+    for (size_t i = 0; i < n; i++) {
+        dvec2 e0 = c[(i + 1) % n] - c[i], e1 = o[(i + 1) % n] - o[i];
+        if (glm::dot(e0, e1) <= 0) return false;  // edge flipped: the bevel folds over itself
+    }
+    auto cross = [](dvec2 a, dvec2 b) { return a.x * b.y - a.y * b.x; };
+    for (size_t i = 0; i < n; i++) {
+        dvec2 a = o[i], b = o[(i + 1) % n];
+        for (size_t j = i + 2; j < n; j++) {
+            if (i == 0 && j == n - 1) continue;
+            dvec2 p = o[j], q = o[(j + 1) % n];
+            double d1 = cross(b - a, p - a), d2 = cross(b - a, q - a), d3 = cross(q - p, a - p), d4 = cross(q - p, b - p);
+            if (((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0))) return false;
+        }
+    }
+    return true;
+}
+
 struct Ring { double inset, z, no, nz; };  // profile point + profile normal (outward, z)
 struct Band { int a, b; bool flat; };
 
@@ -140,6 +164,15 @@ static void extrudePoly(const Poly& poly, double depth, double bevel, int segs, 
         for (auto& h : poly.holes) { A -= std::fabs(area(h)); per(h); }
         double thick = P > 0 ? 2.0 * A / P : 0;
         b = std::min(b, std::max(0.0, thick * 0.28));
+        // fonts with tiny notches or short edges (e.g. stencil and display fonts) fold over with a big bevel:
+        // shrink this shape's bevel until its inset outline stays clean
+        for (int tries = 0; b > 1e-6 && tries < 12; tries++) {
+            bool ok = insetIsClean(poly.outer, b);
+            for (auto& h : poly.holes) ok = ok && insetIsClean(h, b);
+            if (ok) break;
+            b *= 0.7;
+            if (tries == 11) b = 0;
+        }
     }
     if (D <= 1e-6) b = 0;
     // profile rings front -> back

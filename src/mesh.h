@@ -10,6 +10,7 @@ struct Vertex {
     glm::vec3 p;
     glm::vec3 n;
     glm::vec2 uv;
+    glm::vec4 piece{0, 0, 0, 1};   // shatter: piece centre (xyz) + random (w)
 };
 
 // Decoded image, RGBA8 or float RGB
@@ -80,6 +81,10 @@ BuildResult buildPngLogo(const Object& o);
 BuildResult buildImageCard(const Object& o);
 BuildResult buildPrimitive(const Object& o);
 BuildResult importModel(const std::string& path);
+
+// effects: split long triangles so bends and twists look smooth, and cut into shatter pieces
+void subdivideForDeform(std::vector<MeshData>& m, float maxEdge, size_t triBudget);
+void makeShatterPieces(std::vector<MeshData>& m, int pieces, int seed);
 
 // helpers
 bool loadImageFile(const std::string& path, ImageData& out);

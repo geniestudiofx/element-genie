@@ -3,10 +3,12 @@
 #include "scene.h"
 #include "mesh.h"
 #include <glm/glm.hpp>
+#include <map>
+#include <vector>
 
 struct RenderTarget {
     int w = 0, h = 0, samples = 0;
-    unsigned msFbo = 0, msColor = 0, msDepth = 0;     // multisampled HDR (msColor is a multisample texture)
+    unsigned msFbo = 0, msColor = 0, msDepth = 0;     // multisampled HDR
     unsigned hdrFbo = 0, hdrTex = 0;                   // resolved HDR
     unsigned outFbo = 0, outTex = 0;                   // final RGBA8, premultiplied, sRGB encoded
     unsigned accFbo = 0, accTex = 0;                   // motion blur accumulation (HDR)
@@ -27,6 +29,8 @@ struct ViewOptions {
 };
 
 glm::mat4 objectMatrix(const Object& o, float f);
+// Replicator: one matrix per copy (object space). Returns {identity} when the replicator is off.
+std::vector<glm::mat4> replicaMatrices(const Object& o, const LiveFx& live, float f, float fps);
 glm::mat4 glyphMatrix(const Object& o, int glyph, int nGlyphs, float f, float& opacity);
 CamEval evalCamera(const Scene& s, float f, float aspect);
 bool worldBounds(const Scene& s, float f, glm::vec3& mn, glm::vec3& mx);
@@ -42,12 +46,16 @@ public:
     // Ensure geometry is built for an object (lazy). Returns false if failed.
     bool ensureGeometry(Object& o);
     void drawFullscreen();
+    unsigned progResolve = 0;
     unsigned progBlitPremul = 0;   // draws a texture to screen
 private:
     unsigned progPBR = 0, progShadow = 0, progCatcher = 0, progEnv = 0, progPrefilter = 0, progEquirect = 0;
     unsigned progTonemap = 0, progBright = 0, progDown = 0, progUp = 0, progLines = 0, progAccum = 0;
-    unsigned progPrepass = 0, progSSAO = 0, progAOBlur = 0, progResolve = 0;
-    bool prepassMode = false, reflectPass = false;
+    unsigned progPrepass = 0, progSSAO = 0, progAOBlur = 0, progFog = 0, progDof = 0, progPass = 0;
+    std::map<std::string, std::shared_ptr<Texture>> mapCache;
+    unsigned mapTex(const std::string& path, bool srgb);
+    void setFxUniforms(unsigned prog, const Scene& s, const Object& o, float f);
+    bool prepassMode = false, reflectPass = false, ndValid = false;
     glm::mat4 extraM{1.f};
     float groundYCur = 0, depthRangeCur = 1, texPerWorldCur = 1;
     unsigned aoTexCur = 0;

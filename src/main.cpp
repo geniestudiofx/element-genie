@@ -1,4 +1,4 @@
-// Element Genie - open-source 3D titles & models for Premiere Pro
+// Element Genie - open-source 3D titles & models for Premiere Pro and After Effects
 // Window, main loop, panels, viewport, timeline, export.
 #include <glad/gl.h>
 #define GLFW_INCLUDE_NONE
@@ -19,6 +19,8 @@
 #include <set>
 #include <map>
 #include "app.h"
+#include "fonts_cine.h"
+#include "json.hpp"
 #include "project.h"
 #include "platform.h"
 #include "effect.h"
@@ -48,52 +50,83 @@ static const ImU32 GOLD32 = IM_COL32(139, 123, 255, 255);
 static const ImU32 KEY32 = IM_COL32(139, 123, 255, 255);
 static const ImU32 KEYSEL32 = IM_COL32(110, 200, 255, 255);
 
+// Studio palette (Layout A): neutral greys, thin dividers, small square corners.
+// Violet is reserved for selection and the OK button.
+static const ImU32 ST_BG = IM_COL32(27, 27, 29, 255);      // app background
+static const ImU32 ST_PANEL = IM_COL32(32, 32, 34, 255);   // side panels / toolbar
+static const ImU32 ST_BAR = IM_COL32(22, 22, 24, 255);     // menu bar
+static const ImU32 ST_VIEW = IM_COL32(20, 20, 21, 255);    // viewport surround
+static const ImU32 ST_LINE = IM_COL32(44, 44, 48, 255);    // dividers
+static const ImU32 ST_FIELD = IM_COL32(24, 24, 26, 255);   // inputs, thumb wells
+static const ImU32 ST_TEXT = IM_COL32(212, 212, 214, 255);
+static const ImU32 ST_HEAD = IM_COL32(230, 230, 232, 255);
+static const ImU32 ST_DIM = IM_COL32(138, 138, 144, 255);
+static const ImU32 ST_SEL = IM_COL32(54, 50, 77, 255);     // selected row
+
 static void applyTheme() {
     ImGuiStyle& s = ImGui::GetStyle();
     ImGui::StyleColorsDark();
-    s.WindowRounding = 12; s.FrameRounding = 8; s.PopupRounding = 10; s.GrabRounding = 8; s.TabRounding = 8; s.ChildRounding = 14;
-    s.ScrollbarRounding = 8; s.WindowBorderSize = 0; s.FrameBorderSize = 0; s.PopupBorderSize = 1; s.ChildBorderSize = 0;
-    s.WindowPadding = ImVec2(12, 10); s.FramePadding = ImVec2(9, 6); s.ItemSpacing = ImVec2(8, 7); s.ItemInnerSpacing = ImVec2(6, 4);
-    s.IndentSpacing = 16; s.ScrollbarSize = 10; s.GrabMinSize = 12; s.TabBarBorderSize = 0; s.DockingSeparatorSize = 6;
+    s.WindowRounding = 0; s.FrameRounding = 3; s.PopupRounding = 4; s.GrabRounding = 2; s.TabRounding = 0; s.ChildRounding = 0;
+    s.ScrollbarRounding = 2; s.WindowBorderSize = 0; s.FrameBorderSize = 1; s.PopupBorderSize = 1; s.ChildBorderSize = 0;
+    s.WindowPadding = ImVec2(12, 10); s.FramePadding = ImVec2(8, 4); s.ItemSpacing = ImVec2(8, 6); s.ItemInnerSpacing = ImVec2(6, 4);
+    s.IndentSpacing = 14; s.ScrollbarSize = 9; s.GrabMinSize = 5; s.TabBarBorderSize = 1; s.DockingSeparatorSize = 1;
+    s.SeparatorTextBorderSize = 1;
     ImVec4* c = s.Colors;
     auto rgb = [](int r, int g2, int b, float a = 1.f) { return ImVec4(r / 255.f, g2 / 255.f, b / 255.f, a); };
-    c[ImGuiCol_Text] = rgb(230, 230, 236);
-    c[ImGuiCol_TextDisabled] = rgb(128, 128, 140);
-    c[ImGuiCol_WindowBg] = rgb(28, 28, 31);
-    c[ImGuiCol_ChildBg] = rgb(42, 42, 46);
-    c[ImGuiCol_PopupBg] = rgb(36, 36, 42, 0.98f);
-    c[ImGuiCol_Border] = rgb(58, 58, 66);
-    c[ImGuiCol_FrameBg] = rgb(34, 34, 38);
-    c[ImGuiCol_FrameBgHovered] = rgb(48, 48, 56);
-    c[ImGuiCol_FrameBgActive] = rgb(58, 53, 96);
-    c[ImGuiCol_TitleBg] = rgb(22, 22, 25);
-    c[ImGuiCol_TitleBgActive] = rgb(22, 22, 25);
-    c[ImGuiCol_MenuBarBg] = rgb(22, 22, 25);
+    c[ImGuiCol_Text] = rgb(212, 212, 214);
+    c[ImGuiCol_TextDisabled] = rgb(138, 138, 144);
+    c[ImGuiCol_WindowBg] = rgb(27, 27, 29);
+    c[ImGuiCol_ChildBg] = rgb(32, 32, 34);
+    c[ImGuiCol_PopupBg] = rgb(36, 36, 39, 0.99f);
+    c[ImGuiCol_Border] = rgb(51, 51, 56);
+    c[ImGuiCol_BorderShadow] = rgb(0, 0, 0, 0);
+    c[ImGuiCol_FrameBg] = rgb(24, 24, 26);
+    c[ImGuiCol_FrameBgHovered] = rgb(30, 30, 33);
+    c[ImGuiCol_FrameBgActive] = rgb(34, 34, 38);
+    c[ImGuiCol_TitleBg] = rgb(22, 22, 24);
+    c[ImGuiCol_TitleBgActive] = rgb(22, 22, 24);
+    c[ImGuiCol_MenuBarBg] = rgb(22, 22, 24);
     c[ImGuiCol_ScrollbarBg] = rgb(0, 0, 0, 0);
-    c[ImGuiCol_ScrollbarGrab] = rgb(70, 70, 80);
+    c[ImGuiCol_ScrollbarGrab] = rgb(62, 62, 68);
+    c[ImGuiCol_ScrollbarGrabHovered] = rgb(80, 80, 88);
+    c[ImGuiCol_ScrollbarGrabActive] = rgb(96, 96, 104);
     c[ImGuiCol_CheckMark] = GOLD;
-    c[ImGuiCol_SliderGrab] = rgb(139, 123, 255, 0.9f);
+    c[ImGuiCol_SliderGrab] = rgb(128, 128, 136);
     c[ImGuiCol_SliderGrabActive] = GOLD;
-    c[ImGuiCol_Button] = rgb(50, 50, 56);
-    c[ImGuiCol_ButtonHovered] = rgb(62, 60, 76);
-    c[ImGuiCol_ButtonActive] = rgb(58, 53, 96);
-    c[ImGuiCol_Header] = rgb(58, 53, 96);
-    c[ImGuiCol_HeaderHovered] = rgb(54, 52, 70);
-    c[ImGuiCol_HeaderActive] = rgb(70, 62, 120);
-    c[ImGuiCol_Separator] = rgb(52, 52, 60);
-    c[ImGuiCol_Tab] = rgb(42, 42, 46);
-    c[ImGuiCol_TabHovered] = rgb(62, 60, 76);
-    c[ImGuiCol_TabSelected] = rgb(58, 53, 96);
-    c[ImGuiCol_TabSelectedOverline] = rgb(0, 0, 0, 0);
-    c[ImGuiCol_TabDimmed] = rgb(42, 42, 46);
-    c[ImGuiCol_TabDimmedSelected] = rgb(50, 48, 72);
-    c[ImGuiCol_DockingPreview] = rgb(139, 123, 255, 0.4f);
-    c[ImGuiCol_DockingEmptyBg] = rgb(28, 28, 31);
+    c[ImGuiCol_Button] = rgb(38, 38, 42);
+    c[ImGuiCol_ButtonHovered] = rgb(48, 48, 53);
+    c[ImGuiCol_ButtonActive] = rgb(56, 56, 62);
+    c[ImGuiCol_Header] = rgb(54, 50, 77);
+    c[ImGuiCol_HeaderHovered] = rgb(42, 42, 46);
+    c[ImGuiCol_HeaderActive] = rgb(62, 57, 92);
+    c[ImGuiCol_Separator] = rgb(44, 44, 48);
+    c[ImGuiCol_SeparatorHovered] = rgb(70, 70, 76);
+    c[ImGuiCol_SeparatorActive] = GOLD;
+    c[ImGuiCol_Tab] = rgb(32, 32, 34);
+    c[ImGuiCol_TabHovered] = rgb(40, 40, 44);
+    c[ImGuiCol_MenuBarBg] = rgb(22, 22, 24);
+    c[ImGuiCol_TabSelected] = rgb(46, 46, 50);
+    c[ImGuiCol_TabSelectedOverline] = GOLD;
+    c[ImGuiCol_TabDimmed] = rgb(32, 32, 34);
+    c[ImGuiCol_TabDimmedSelected] = rgb(32, 32, 34);
+    c[ImGuiCol_TabDimmedSelectedOverline] = rgb(0, 0, 0, 0);
+    c[ImGuiCol_DockingPreview] = rgb(139, 123, 255, 0.35f);
+    c[ImGuiCol_DockingEmptyBg] = rgb(27, 27, 29);
     c[ImGuiCol_ResizeGrip] = rgb(0, 0, 0, 0);
     c[ImGuiCol_TextSelectedBg] = rgb(139, 123, 255, 0.35f);
     c[ImGuiCol_NavCursor] = GOLD;
+    c[ImGuiCol_TableHeaderBg] = rgb(30, 30, 33);
+    c[ImGuiCol_TableBorderStrong] = rgb(44, 44, 48);
+    c[ImGuiCol_TableBorderLight] = rgb(38, 38, 42);
+    c[ImGuiCol_PlotHistogram] = GOLD;
 }
 
+static void drawLampMark(ImDrawList* dl, ImVec2 o) {
+    // tiny version of the Genie lamp: body, spout, lid
+    dl->AddEllipseFilled(ImVec2(o.x + 7, o.y + 10), ImVec2(6, 2.6f), GOLD32);
+    dl->AddLine(ImVec2(o.x + 11.5f, o.y + 9.5f), ImVec2(o.x + 15, o.y + 5.5f), GOLD32, 1.4f);
+    dl->AddCircleFilled(ImVec2(o.x + 7, o.y + 6.6f), 1.3f, IM_COL32(185, 175, 255, 255));
+}
 // ============================================================ helpers
 int currentFrameInt() { return (int)std::floor(g.frame + 0.5f); }
 Object* selectedObject() {
@@ -111,22 +144,23 @@ static void tooltip(const char* t) { if (ImGui::IsItemHovered(ImGuiHoveredFlags_
 static void sectionHeader(const char* t) {
     ImGui::Spacing();
     ImGui::PushFont(g.fBold, 0);
-    ImGui::TextColored(ImVec4(0.75f, 0.73f, 0.70f, 1), "%s", t);
+    ImGui::TextColored(ImVec4(0.90f, 0.90f, 0.91f, 1), "%s", t);
     ImGui::PopFont();
     ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y - 2), ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y - 2), IM_COL32(62, 60, 76, 255));
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y - 2), ImVec2(p.x + ImGui::GetContentRegionAvail().x, p.y - 2), IM_COL32(44, 44, 48, 255));
     ImGui::Spacing();
 }
 
 static bool goldButton(const char* label, ImVec2 size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.545f, 0.482f, 1.f, 1));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.62f, 0.57f, 1.f, 1));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.45f, 0.39f, 0.9f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(108 / 255.f, 92 / 255.f, 224 / 255.f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(122 / 255.f, 107 / 255.f, 232 / 255.f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(94 / 255.f, 80 / 255.f, 205 / 255.f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(122 / 255.f, 107 / 255.f, 232 / 255.f, 1));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
     ImGui::PushFont(g.fBold, 0);
     bool r = ImGui::Button(label, size);
     ImGui::PopFont();
-    ImGui::PopStyleColor(4);
+    ImGui::PopStyleColor(5);
     return r;
 }
 
@@ -300,6 +334,35 @@ static bool materialPicker(Material& m, const char* id) {
     ImGui::SetNextItemWidth(w * 0.6f);
     if (ImGui::SliderFloat("Self glow", &m.emissiveStrength, 0, 10, "%.1f")) { m.preset = "Custom"; changed = true; }
     tooltip("Makes the surface emit its own light. Combine with Glow in Scene settings.");
+    // texture maps
+    if (ImGui::TreeNodeEx("Texture maps", (m.baseMap.empty() && m.roughMap.empty() && m.normalMap.empty()) ? 0 : ImGuiTreeNodeFlags_DefaultOpen)) {
+        auto mapRow = [&](const char* label, std::string& path, const char* tip) {
+            ImGui::PushID(label);
+            ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(label); ImGui::SameLine(90);
+            std::string shown = path.empty() ? "None" : baseName(path);
+            if (ImGui::Button(shown.c_str(), ImVec2(std::max(60.f, ImGui::GetContentRegionAvail().x - 30), 0))) {
+                std::string p = openFileDialog(label, "Images|*.png;*.jpg;*.jpeg;*.tga;*.bmp|All files|*.*", g.hwnd);
+                if (!p.empty()) { path = p; changed = true; }
+            }
+            tooltip(tip);
+            ImGui::SameLine(0, 4);
+            ImGui::BeginDisabled(path.empty());
+            if (ImGui::SmallButton("x")) { path.clear(); changed = true; }
+            ImGui::EndDisabled();
+            ImGui::PopID();
+        };
+        mapRow("Colour map", m.baseMap, "An image painted over the surface (wood, marble, brushed metal...). Free textures: polyhaven.com/textures");
+        mapRow("Rough map", m.roughMap, "Black/white image: dark = shiny, light = matte.");
+        mapRow("Bump map", m.normalMap, "A normal map (the purple-blue image) that adds fine surface detail.");
+        const char* mp[] = {"Model UVs", "Box wrap (any shape)"};
+        ImGui::SetNextItemWidth(w * 0.6f);
+        if (ImGui::Combo("Mapping", &m.mapping, mp, 2)) changed = true;
+        tooltip("Box wrap projects the image from the sides, front and top - works on text and logos with no UVs.");
+        ImGui::SetNextItemWidth(w * 0.6f);
+        if (ImGui::SliderFloat("Tiling", &m.mapScale, 0.05f, 10.f, "%.2f", ImGuiSliderFlags_Logarithmic)) changed = true;
+        if (!m.normalMap.empty()) { ImGui::SetNextItemWidth(w * 0.6f); if (ImGui::SliderFloat("Bump strength", &m.normalStrength, 0, 3, "%.2f")) changed = true; }
+        ImGui::TreePop();
+    }
     ImGui::PopID();
     return changed;
 }
@@ -385,7 +448,7 @@ static std::string uniqueName(const std::string& base) {
 static void addText(const std::string& txt = "TEXT") {
     Object& o = addObject(ObjType::Text, uniqueName("Text"));
     o.text = txt; o.font = "builtin:Inter Black";
-    applyMat(o.mat, MATS[1]);
+    applyMat(o.mat, MATS[0]);
     o.mat2 = o.mat;
 }
 static void importFile(const std::string& path);
@@ -408,7 +471,7 @@ static void addIcon(const char* name) {
     Object& o = addObject(ObjType::Logo, uniqueName(name));
     o.path = std::string("builtin:icon:") + name;
     o.depth = 0.35f; o.bevel = 0.04f; o.bevelStyle = BEVEL_ROUND; o.useImageColours = false;
-    applyMat(o.mat, MATS[1]); o.mat2 = o.mat;
+    applyMat(o.mat, MATS[0]); o.mat2 = o.mat;
 }
 static void drawIconThumb(ImDrawList* dl, ImVec2 p0, float sz, int idx, ImU32 col, ImU32 bg) {
     static NSVGimage* cache[64] = {};
@@ -455,7 +518,7 @@ static void importFile(const std::string& path) {
     if (e == "svg" || e == "png") {
         Object& o = addObject(ObjType::Logo, uniqueName(stem(path)));
         o.path = path; o.depth = 0.2f; o.bevel = 0.025f;
-        applyMat(o.mat, MATS[1]); o.mat2 = o.mat; o.useImageColours = true;
+        applyMat(o.mat, MATS[0]); o.mat2 = o.mat; o.useImageColours = true;
         o.mat.metallic = 0.3f; o.mat.roughness = 0.3f; o.mat.preset = "Custom";
         if (!g.R.ensureGeometry(o)) notify(o.geoError);
         return;
@@ -569,6 +632,221 @@ static const LetterPreset LPRESETS[] = {
     {"Slide from left", {-3, 0, 0}, {0, -45, 0}, 1},
 };
 
+// ============================================================ title presets (add-on packs)
+static void togglePlay();
+// Packs are .egpack JSON files in <Scene Setup folder>\Presets or %APPDATA%\Element Genie\Presets.
+struct AnimPreset { const char* name; int order, duration; float stagger; vec3 pos, rot; float scale; bool fade; };
+static const AnimPreset ANIMS[] = {
+    {"None", 0, 1, 0, {0, 0, 0}, {0, 0, 0}, 1, false},
+    {"Rise Up", 0, 18, 2, {0, -0.8f, 0}, {0, 0, 0}, 1, true},
+    {"Drop In", 0, 16, 2, {0, 1.5f, 0}, {-40, 0, 0}, 1, true},
+    {"Flip In", 0, 18, 3, {0, 0, 0.6f}, {0, 90, 0}, 1, true},
+    {"Spin In", 0, 20, 2, {0, 0, 0}, {0, 0, -180}, 0.1f, true},
+    {"Slam", 0, 10, 1.5f, {0, 0, 4}, {0, 0, 0}, 3, true},
+    {"Fly Through", 0, 22, 2, {0, 0, 8}, {0, 0, 0}, 1, true},
+    {"Fly Through Slow", 0, 45, 1, {0, 0, 10}, {0, 0, 0}, 1, true},
+    {"Tumble", 0, 22, 2, {0, 2, 0}, {360, 0, 0}, 1, true},
+    {"Pop", 2, 12, 2, {0, 0, 0}, {0, 0, 0}, 0, false},
+    {"Typewriter", 0, 1, 3, {0, 0, 0}, {0, 0, 0}, 0, false},
+    {"Scatter", 3, 24, 1.5f, {0, 0, 3}, {180, 90, 45}, 0.3f, true},
+    {"Slide In", 0, 18, 2, {-3, 0, 0}, {0, 0, 0}, 1, true},
+    {"Fall Back", 0, 18, 2, {0, 0, -2}, {90, 0, 0}, 1, true},
+    {"Centre Burst", 2, 16, 2, {0, 0, 2}, {0, 0, 0}, 0.2f, true},
+    {"Unfold", 0, 16, 2, {0, 0, 0}, {-90, 0, 0}, 1, true},
+    {"Slow Reveal", 0, 30, 3, {0, -0.2f, 0.5f}, {0, 0, 0}, 1, true},
+};
+static const int ANIM_COUNT = (int)(sizeof ANIMS / sizeof ANIMS[0]);
+struct TitlePreset { std::string name, pack; nlohmann::json j; GLuint thumb = 0; bool tried = false; };
+static std::vector<TitlePreset> g_titles;
+static std::vector<std::string> g_packs;
+static bool g_titlesLoaded = false;
+static double g_animPreviewT = -1;
+static std::string presetsUserDir() { return appDataDir() + "Presets\\"; }
+static void loadPackFile(const std::string& path) {
+    std::vector<uint8_t> b; if (!readFileBytes(path, b)) return;
+    nlohmann::json j = nlohmann::json::parse(b.begin(), b.end(), nullptr, false);
+    if (j.is_discarded() || !j.contains("presets") || !j["presets"].is_array()) return;
+    std::string pack = j.value("pack", stem(path));
+    if (std::find(g_packs.begin(), g_packs.end(), pack) == g_packs.end()) g_packs.push_back(pack);
+    for (auto& p : j["presets"]) { if (!p.is_object()) continue; TitlePreset t; t.name = p.value("name", "Preset"); t.pack = pack; t.j = p; g_titles.push_back(t); }
+}
+static void loadTitlePacks() {
+    for (auto& t : g_titles) if (t.thumb) glDeleteTextures(1, &t.thumb);
+    g_titles.clear(); g_packs.clear(); g_titlesLoaded = true;
+    for (const std::string& dir : {exeDir() + "Presets\\", presetsUserDir()}) {
+        WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(widen(dir + "*.egpack").c_str(), &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do loadPackFile(dir + narrow(fd.cFileName)); while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+}
+static vec3 jv3(const nlohmann::json& j, const char* k, vec3 d) {
+    if (!j.contains(k) || !j[k].is_array() || j[k].size() < 3) return d;
+    return vec3(j[k][0].get<float>(), j[k][1].get<float>(), j[k][2].get<float>());
+}
+static Material matFromJson(const nlohmann::json& m) {
+    Material r; r.preset = "Custom";
+    r.color = jv3(m, "color", vec3(0.95f)); r.metallic = m.value("metal", 1.f); r.roughness = m.value("rough", 0.12f);
+    r.clearcoat = m.value("coat", 0.f); r.emissiveStrength = m.value("glow", 0.f);
+    return r;
+}
+static void applyAnimPreset(Object& o, const AnimPreset& a) {
+    auto& la = o.letters;
+    la.enabled = std::string(a.name) != "None";
+    la.mode = 0; la.order = a.order; la.duration = a.duration; la.stagger = a.stagger;
+    la.offPos = a.pos; la.offRot = a.rot; la.offScale = a.scale; la.fade = a.fade;
+    la.start = g.setupMode ? 0 : currentFrameInt();
+}
+static const AnimPreset* animByName(const std::string& n) { for (auto& a : ANIMS) if (n == a.name) return &a; return nullptr; }
+// Look = object material/bevel/font + scene lighting. sceneToo=false only touches the object.
+static void applyTitleLook(Scene& s, Object& o, const nlohmann::json& p, bool sceneToo) {
+    if (p.contains("font")) o.font = "builtin:" + p["font"].get<std::string>();
+    if (p.contains("face")) o.mat = matFromJson(p["face"]);
+    o.edgeMat = p.contains("edge");
+    o.mat2 = o.edgeMat ? matFromJson(p["edge"]) : o.mat;
+    o.depth = p.value("depth", 0.3f); o.bevel = p.value("bevel", 0.03f);
+    o.bevelStyle = std::clamp(p.value("bevelStyle", 1), 0, BEVEL_COUNT - 1); o.bevelDepth = p.value("bevelDepth", 1.f);
+    o.letterSpacing = p.value("letterSpacing", 0.f);
+    if (p.contains("anim")) if (const AnimPreset* a = animByName(p["anim"].get<std::string>())) applyAnimPreset(o, *a);
+    if (!sceneToo) return;
+    s.env.preset = std::clamp(p.value("env", 6), 0, 6); s.env.intensity = p.value("envStrength", 1.f); s.env.exposure = p.value("exposure", 0.f);
+    s.glow = p.value("glow", 0.f); s.glowThreshold = p.value("glowThreshold", 1.f);
+    s.fog.enabled = p.contains("fog");
+    if (s.fog.enabled) { auto& f = p["fog"]; s.fog.color = jv3(f, "color", s.fog.color); s.fog.start = f.value("start", 5.f); s.fog.end = f.value("end", 25.f); s.fog.amount = f.value("amount", 1.f); s.fog.fadeOut = false; }
+    Scene d; sceneDefaults(d); s.lights = d.lights;
+    if (p.contains("lights") && p["lights"].is_array() && !p["lights"].empty()) {
+        s.lights.clear(); int i = 0;
+        for (auto& l : p["lights"]) {
+            Light L; L.name = i == 0 ? "Key light" : i == 1 ? "Rim light" : "Light " + std::to_string(i + 1);
+            L.type = l.value("type", 0); L.pos = Track<vec3>(jv3(l, "pos", vec3(3, 5, 4))); L.color = jv3(l, "color", vec3(1));
+            L.intensity = Track<float>(l.value("intensity", 2.f)); L.shadow = l.value("shadow", false); s.lights.push_back(L); i++;
+        }
+    }
+}
+static void buildTitleThumb(TitlePreset& t) {
+    t.tried = true;
+    const int W = 240, H = 136;
+    Scene s; sceneDefaults(s);
+    s.reflection.enabled = false; s.catcher.enabled = false; s.quality.ao = true;
+    Object o; o.id = 1; o.type = ObjType::Text; o.font = "builtin:Inter Black";
+    std::string txt = t.j.value("text", "TITLE"); if (txt.size() > 9) txt = txt.substr(0, 9);
+    o.text = txt; applyTitleLook(s, o, t.j, true); o.letters.enabled = false;
+    if (!g.R.ensureGeometry(o) || !o.geo) return;
+    vec3 mn = o.geo->bmin, mx = o.geo->bmax, ctr = (mn + mx) * .5f;
+    float fov = 30.f, aspect = W / (float)H;
+    float halfW = (mx.x - mn.x) * .5f, halfH = (mx.y - mn.y) * .5f;
+    float d = std::max(halfW / (std::tan(glm::radians(fov) * .5f) * aspect), halfH / std::tan(glm::radians(fov) * .5f)) * 1.25f + (mx.z - mn.z);
+    s.cam.pos.value = ctr + vec3(0, d * 0.12f, d); s.cam.target.value = ctr; s.cam.fov.value = fov;
+    s.objects.push_back(o);
+    RenderTarget rt; rt.ensure(W, H, 8);
+    ViewOptions vo; vo.aspect = aspect; g.R.render(s, 0.f, rt, vo);
+    std::vector<uint8_t> px((size_t)W * H * 4), out((size_t)W * H * 4);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, rt.outFbo); glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
+        const uint8_t* sp = &px[((size_t)(H - 1 - y) * W + x) * 4]; uint8_t* dp = &out[((size_t)y * W + x) * 4];
+        float fy = y / (float)H, fx = x / (float)W - .5f;
+        float b = 14 + 16 * std::exp(-(fx * fx * 4.f + (fy - .5f) * (fy - .5f) * 6.f));
+        float a = sp[3] / 255.f;
+        for (int k = 0; k < 3; k++) dp[k] = (uint8_t)std::min(255.f, sp[k] + b * (k == 2 ? 1.1f : 1.f) * (1 - a));
+        dp[3] = 255;
+    }
+    rt.release();
+    glGenTextures(1, &t.thumb); glBindTexture(GL_TEXTURE_2D, t.thumb);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+}
+static void playAnimPreview() {
+    if (g.setupMode) { g_animPreviewT = ImGui::GetTime(); g.previewLetters = 0; }
+    else if (!g.playing) togglePlay();
+}
+static void applyTitlePreset(TitlePreset& t) {
+    Object* o = selectedObject();
+    if (!o || o->type != ObjType::Text) {
+        addText(t.j.value("text", "TITLE"));
+        o = &g.S.objects.back(); g.sel = {Selection::Obj, o->id};
+        o->name = uniqueName(t.name);
+    }
+    applyTitleLook(g.S, *o, t.j, true);
+    playAnimPreview();
+    notify("Applied " + t.name + (g.setupMode ? " - it builds in automatically at the start of your clip" : ""));
+}
+static void titlesBody() {
+    if (!g_titlesLoaded) loadTitlePacks();
+    float avail = ImGui::GetContentRegionAvail().x;
+    static int packSel = 0; // 0 = all
+    if (g_titles.empty()) {
+        ImGui::TextWrapped("No title packs installed yet.");
+        ImGui::TextDisabled("Packs are .egpack files.");
+    } else {
+        std::string cur = packSel == 0 ? "All packs" : g_packs[std::min(packSel, (int)g_packs.size()) - 1];
+        ImGui::SetNextItemWidth(avail);
+        if (ImGui::BeginCombo("##pack", cur.c_str())) {
+            if (ImGui::Selectable("All packs", packSel == 0)) packSel = 0;
+            for (int i = 0; i < (int)g_packs.size(); i++) if (ImGui::Selectable(g_packs[i].c_str(), packSel == i + 1)) packSel = i + 1;
+            ImGui::EndCombo();
+        }
+        if (ImGui::Button("Surprise me", ImVec2(avail, 26))) {
+            std::vector<int> idx; for (int i = 0; i < (int)g_titles.size(); i++) if (packSel == 0 || g_titles[i].pack == g_packs[packSel - 1]) idx.push_back(i);
+            if (!idx.empty()) applyTitlePreset(g_titles[idx[rand() % idx.size()]]);
+        }
+        tooltip("Apply a random title look and animation");
+        ImGui::Spacing();
+        // thumbnails: render one per frame so the panel stays responsive
+        bool builtOne = false;
+        float cw = (avail - 6) / 2, ch = cw * 136.f / 240.f;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        int col = 0;
+        for (int i = 0; i < (int)g_titles.size(); i++) {
+            TitlePreset& t = g_titles[i];
+            if (packSel != 0 && t.pack != g_packs[packSel - 1]) continue;
+            if (!t.tried && !builtOne) { buildTitleThumb(t); builtOne = true; }
+            if (col % 2) ImGui::SameLine(0, 6);
+            ImGui::PushID(i);
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            if (ImGui::InvisibleButton("t", ImVec2(cw, ch + 20))) applyTitlePreset(t);
+            bool hov = ImGui::IsItemHovered();
+            if (t.thumb) dl->AddImageRounded((ImTextureID)(intptr_t)t.thumb, p, ImVec2(p.x + cw, p.y + ch), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 3);
+            else dl->AddRectFilled(p, ImVec2(p.x + cw, p.y + ch), IM_COL32(30, 30, 33, 255), 3);
+            dl->AddRect(p, ImVec2(p.x + cw, p.y + ch), hov ? GOLD32 : ST_LINE, 3, 0, hov ? 1.5f : 1.f);
+            ImGui::PushFont(nullptr, 12.f);
+            dl->AddText(ImVec2(p.x + 2, p.y + ch + 3), hov ? ST_HEAD : IM_COL32(180, 180, 186, 255), t.name.c_str());
+            ImGui::PopFont();
+            if (hov) ImGui::SetTooltip("%s  (%s pack)\nAnimation: %s\nClick to apply to the selected text, or add a new title.", t.name.c_str(), t.pack.c_str(), t.j.value("anim", "None").c_str());
+            ImGui::PopID();
+            col++;
+        }
+    }
+    ImGui::Spacing();
+    if (ImGui::Button("Install a pack...", ImVec2(avail, 0))) {
+        std::string pth = openFileDialog("Install title pack", "Element Genie title pack|*.egpack|All files|*.*", g.hwnd);
+        if (!pth.empty()) {
+            std::wstring dir = widen(presetsUserDir()); CreateDirectoryW(dir.c_str(), nullptr);
+            if (CopyFileW(widen(pth).c_str(), (dir + widen(baseName(pth))).c_str(), FALSE)) { loadTitlePacks(); notify("Installed " + baseName(pth)); }
+            else notify("Couldn't install that pack.");
+        }
+    }
+    // animations
+    ImGui::Spacing(); ImGui::Spacing();
+    ImGui::TextUnformatted("Animation");
+    ImGui::SameLine(); ImGui::TextDisabled(g.setupMode ? "(plays at the start of your clip)" : "(starts at the playhead)");
+    Object* so = selectedObject();
+    bool hasText = so && so->type == ObjType::Text;
+    if (!hasText) ImGui::TextDisabled("Select a text to animate it.");
+    float bw = (avail - 12) / 3;
+    ImGui::BeginDisabled(!hasText);
+    for (int i = 0; i < ANIM_COUNT; i++) {
+        if (i % 3) ImGui::SameLine(0, 6);
+        bool on = hasText && (i == 0 ? !so->letters.enabled : (so->letters.enabled && so->letters.offPos == ANIMS[i].pos && so->letters.offRot == ANIMS[i].rot && so->letters.duration == ANIMS[i].duration));
+        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(ST_SEL));
+        if (ImGui::Button(ANIMS[i].name, ImVec2(bw, 26)) && hasText) { applyAnimPreset(*so, ANIMS[i]); if (i) playAnimPreview(); }
+        if (on) ImGui::PopStyleColor();
+    }
+    ImGui::EndDisabled();
+}
+
 // ============================================================ fonts combo
 static bool fontCombo(Object& o) {
     bool changed = false;
@@ -583,7 +861,9 @@ static bool fontCombo(Object& o) {
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint("##filt", "Search fonts...", filt, sizeof filt);
         std::string fl = filt; for (auto& c : fl) c = (char)tolower((unsigned char)c);
-        for (const char* b : {"Inter Black", "Inter Bold", "Inter Regular"}) {
+        std::vector<const char*> builtins = {"Inter Black", "Inter Bold", "Inter Regular"};
+        for (int i = 0; i < g_cine_font_count; i++) builtins.push_back(g_cine_fonts[i].name);
+        for (const char* b : builtins) {
             std::string id = std::string("builtin:") + b;
             std::string n = std::string(b) + "  (built in)";
             std::string ln = n; for (auto& c : ln) c = (char)tolower((unsigned char)c);
@@ -764,6 +1044,77 @@ static bool bevelPicker(Object& o) {
 }
 
 // ============================================================ panels: properties
+static void effectsProps(Object& o) {
+    float w = ImGui::GetContentRegionAvail().x - 100;
+    auto row = [&](float& v, const char* l, float a, float b, const char* f, ImGuiSliderFlags fl = 0) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat(l, &v, a, b, f, fl); };
+    auto irow = [&](int& v, const char* l, int a, int b) { ImGui::SetNextItemWidth(w); ImGui::SliderInt(l, &v, a, b); };
+    // ---------------- replicator
+    sectionHeader("Replicator");
+    Replicator& r = o.rep;
+    ImGui::Checkbox("Make copies", &r.enabled);
+    tooltip("Clone this object into a grid, ring, sphere, spiral, cloud or line.");
+    if (r.enabled) {
+        const char* shapes[] = {"Grid", "Ring", "Sphere", "Spiral", "Random cloud", "Line", "Wave grid"};
+        ImGui::SetNextItemWidth(w); ImGui::Combo("Shape", &r.shape, shapes, 7);
+        if (r.shape == 0 || r.shape == 6) {
+            int c3[3] = {r.cx, r.cy, r.cz};
+            ImGui::SetNextItemWidth(w);
+            if (r.shape == 0) { if (ImGui::DragInt3("Copies X Y Z", c3, 0.1f, 1, 60)) { r.cx = c3[0]; r.cy = c3[1]; r.cz = c3[2]; } }
+            else { int c2[2] = {r.cx, r.cz}; if (ImGui::DragInt2("Copies X Z", c2, 0.1f, 1, 60)) { r.cx = c2[0]; r.cz = c2[1]; } }
+            ImGui::SetNextItemWidth(w); ImGui::DragFloat3("Spacing", &r.spacing.x, 0.01f, 0.f, 50.f, "%.2f");
+            if (r.shape == 6) { row(r.waveHeight, "Wave height", 0, 3, "%.2f"); ImGui::TextDisabled("Animate the wave with Effects > Noise Evolution."); }
+        } else if (r.shape == 5) {
+            irow(r.count, "Copies", 1, 60);
+            ImGui::SetNextItemWidth(w); ImGui::DragFloat3("Step", &r.spacing.x, 0.01f, -50.f, 50.f, "%.2f");
+            tooltip("How far each copy moves from the last one (X, Y, Z).");
+        } else {
+            irow(r.count, "Copies", 1, r.shape == 4 ? 400 : 120);
+            row(r.radius, "Radius", 0, 15, "%.2f");
+            if (r.shape == 3) { row(r.height, "Height", -10, 10, "%.2f"); row(r.turns, "Turns", 0.1f, 10, "%.1f"); }
+            if (r.shape == 4) row(r.height, "Height", 0, 15, "%.2f");
+            if (r.shape >= 1 && r.shape <= 3) ImGui::Checkbox("Face outwards", &r.faceCentre);
+        }
+        if (ImGui::TreeNode("Randomise")) {
+            ImGui::SetNextItemWidth(w); ImGui::DragFloat3("Position", &r.randPos.x, 0.01f, 0.f, 20.f, "%.2f");
+            ImGui::SetNextItemWidth(w); ImGui::DragFloat3("Rotation", &r.randRot.x, 0.5f, 0.f, 180.f, "%.0f°");
+            row(r.randScale, "Scale", 0, 1, "%.2f");
+            row(r.scaleStep, "Grow each", -0.2f, 0.5f, "%.3f");
+            tooltip("Each copy is a bit bigger (or smaller) than the one before.");
+            ImGui::SetNextItemWidth(w); ImGui::DragInt("Seed", &r.seed, 0.2f, 0, 9999);
+            ImGui::TreePop();
+        }
+        if (g.setupMode) ImGui::TextDisabled("Keyframe Effects > Replicator Spread / Rotate / Build\nin Effect Controls.");
+    }
+    // ---------------- deform
+    sectionHeader("Deform");
+    Deform& d = o.deform;
+    const char* ax[] = {"Along X (width)", "Along Y (height)", "Along Z (depth)"};
+    ImGui::SetNextItemWidth(w); ImGui::Combo("Direction", &d.axis, ax, 3);
+    row(d.bend, "Bend", -360, 360, "%.0f°");
+    row(d.twist, "Twist", -720, 720, "%.0f°");
+    row(d.taper, "Taper", -1, 1, "%.2f");
+    row(d.noise, "Wobble", 0, 0.5f, "%.3f");
+    tooltip("Wavy, liquid-looking surface. Animate it with Effects > Noise Evolution.");
+    if (d.noise > 0) { row(d.noiseScale, "Wobble detail", 0.2f, 10, "%.2f"); if (!g.setupMode) row(d.noiseSpeed, "Wobble speed", 0, 4, "%.2f"); }
+    if (d.active() && ImGui::SmallButton("Reset deform")) d = Deform();
+    // ---------------- shatter
+    sectionHeader("Shatter");
+    Shatter& h = o.shatter;
+    ImGui::Checkbox("Break into pieces", &h.enabled);
+    tooltip("Animate it with Effects > Shatter (0% = whole, 100% = blown apart).");
+    if (h.enabled) {
+        irow(h.pieces, "Pieces", 4, 400);
+        const char* dirs[] = {"Outwards", "Towards camera", "Upwards", "Random"};
+        ImGui::SetNextItemWidth(w); ImGui::Combo("Blast", &h.direction, dirs, 4);
+        row(h.force, "Distance", 0, 10, "%.2f");
+        row(h.spin, "Spin", 0, 1440, "%.0f°");
+        row(h.gravity, "Gravity", 0, 4, "%.2f");
+        row(h.randomness, "Randomness", 0, 1, "%.2f");
+        ImGui::SetNextItemWidth(w); ImGui::DragInt("Seed##sh", &h.seed, 0.2f, 0, 9999);
+        ImGui::TextDisabled("Preview with the Shatter slider under the viewer.");
+    }
+}
+
 static void objectProps(Object& o) {
     char name[128]; snprintf(name, sizeof name, "%s", o.name.c_str());
     ImGui::SetNextItemWidth(-1);
@@ -787,7 +1138,8 @@ static void objectProps(Object& o) {
             }
             if (o.type == ObjType::Logo || o.type == ObjType::Model || o.type == ObjType::ImageCard) {
                 sectionHeader(o.type == ObjType::Model ? "Model file" : o.type == ObjType::Logo ? "Logo file" : "Image");
-                ImGui::TextWrapped("%s", baseName(o.path).c_str());
+                if (o.path.rfind("builtin:icon:", 0) == 0) ImGui::TextWrapped("Built-in icon: %s", o.path.substr(13).c_str());
+                else ImGui::TextWrapped("%s", baseName(o.path).c_str());
                 if (ImGui::Button("Replace file...")) {
                     std::string p = o.type == ObjType::Model ? openFileDialog("Replace model", "3D models|*.glb;*.gltf;*.fbx;*.obj|All files|*.*", g.hwnd)
                                                            : openFileDialog("Replace image", "Images|*.png;*.svg;*.jpg;*.jpeg|All files|*.*", g.hwnd);
@@ -827,7 +1179,7 @@ static void objectProps(Object& o) {
                 }
             }
             if (g.setupMode) {
-                sectionHeader("Animate in Premiere with");
+                sectionHeader("Animate in Premiere / After Effects with");
                 const char* gn[] = {"Group 1", "Group 2", "Group 3", "Group 4", "Group 5"};
                 ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70);
                 ImGui::Combo("##group", &o.group, gn, 5);
@@ -861,10 +1213,14 @@ static void objectProps(Object& o) {
             }
             ImGui::EndTabItem();
         }
+        if (ImGui::BeginTabItem("Effects")) {
+            effectsProps(o);
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem("Animate")) {
             if (g.setupMode) {
                 sectionHeader("Keyframing");
-                ImGui::TextWrapped("Click OK, then keyframe in Premiere's Effect Controls: this object's Group (position, rotation, scale, opacity), Camera, and Animation > Letters Built.");
+                ImGui::TextWrapped("Click OK, then keyframe in Effect Controls (Premiere or After Effects): this object's Group (position, rotation, scale, opacity), Camera, and Animation > Letters Built.");
             } else {
             sectionHeader("One-click animations");
             ImGui::TextDisabled("Starts at the current frame");
@@ -882,7 +1238,7 @@ static void objectProps(Object& o) {
                 ImGui::Checkbox("Animate each letter", &o.letters.enabled);
                 if (o.letters.enabled) {
                     LetterAnim& la = o.letters;
-                    if (g.setupMode) ImGui::TextDisabled("Preview with the slider under the viewer.\nIn Premiere, keyframe Animation > Letters Built 0%% -> 100%%.");
+                    if (g.setupMode) ImGui::TextDisabled("Preview with the slider under the viewer.\nIn Effect Controls, keyframe Animation > Letters Built 0%% -> 100%%.");
                     float w = ImGui::GetContentRegionAvail().x - 90;
                     ImGui::SetNextItemWidth(w);
                     if (ImGui::BeginCombo("Style", "Choose a style...")) {
@@ -929,7 +1285,7 @@ static void cameraProps() {
         vec3 dir = glm::normalize(c.pos.eval(g.frame) - c.target.eval(g.frame));
         c.target.set(currentFrameInt(), ctr); c.pos.set(currentFrameInt(), ctr + dir * d);
     }
-    if (g.setupMode) { ImGui::Spacing(); ImGui::TextWrapped("This is the starting camera. Animate it in Premiere with Effect Controls > Camera (Orbit, Tilt, Zoom, Pan, Roll)."); return; }
+    if (g.setupMode) { ImGui::Spacing(); ImGui::TextWrapped("This is the starting camera. Animate it in Effect Controls > Camera (Orbit, Tilt, Zoom, Pan, Roll).\n\nIn After Effects, if your comp has a camera layer, Element Genie looks through that camera instead (Effect Controls > After Effects 3D > Use Comp Camera)."); return; }
     sectionHeader("Camera moves");
     ImGui::TextDisabled("Adds keyframes over the whole clip");
     const char* cm[] = {"Slow push in", "Orbit 90°", "Crane up", "Dolly zoom"};
@@ -954,8 +1310,16 @@ static void lightProps(Light& l) {
     ImGui::ColorEdit3("Colour", &l.color.x);
     ImGui::Checkbox("Casts shadows", &l.shadow);
     tooltip("Only the first shadow-casting light makes shadows.");
+    {   // the renderer uses the first 4 lights that are on
+        int before = 0;
+        for (auto& o : g.S.lights) { if (&o == &l) break; if (o.enabled) before++; }
+        if (l.enabled && before >= 4) ImGui::TextColored(ImVec4(1.f, 0.62f, 0.55f, 1), "Only 4 lights can be on at once -\nturn another light off to use this one.");
+    }
     ImGui::Spacing();
     if (ImGui::Button("Delete light")) deleteSelected();
+    ImGui::Spacing();
+    ImGui::TextDisabled("Tip: click a light in the viewer and drag its arrows.");
+    ImGui::TextWrapped("In After Effects, light layers in your comp replace these lights (Effect Controls > After Effects 3D).");
 }
 
 static const char* ENV_NAMES[] = {"Studio softboxes", "Golden hour", "Neon night", "Chrome bands", "Soft daylight", "Gold studio", "Classic chrome"};
@@ -979,6 +1343,8 @@ static void worldProps() {
     float w = ImGui::GetContentRegionAvail().x - 90;
     ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Strength", &s.env.intensity, 0, 4, "%.2f");
     floatRow("Rotate", s.env.rotation, 0.5f, "%.0f°");
+    ImGui::Checkbox("Reflections follow key light", &s.env.followLight);
+    tooltip("Moving the first light also swings the reflections round, so shiny text reacts to it.");
     ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Exposure", &s.env.exposure, -3, 3, "%.1f stops");
 
     sectionHeader("Floor reflection");
@@ -990,7 +1356,7 @@ static void worldProps() {
     if (g.setupMode) ImGui::TextDisabled("Also in Effect Controls > Realism.");
     sectionHeader("Shadow on the ground");
     ImGui::Checkbox("Floor shadow", &s.catcher.enabled);
-    tooltip("An invisible floor that only shows the shadow - it lands on your footage in Premiere.");
+    tooltip("An invisible floor that only shows the shadow - it lands on your footage.");
     if (s.catcher.enabled) {
         ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Darkness", &s.catcher.opacity, 0, 1, "%.2f");
         ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Softness", &s.catcher.softness, 0, 1, "%.2f");
@@ -1000,6 +1366,23 @@ static void worldProps() {
     ImGui::Checkbox("Contact shadows (ambient occlusion)", &s.quality.ao);
     if (s.quality.ao) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat("AO strength", &s.quality.aoStrength, 0, 3, "%.2f"); }
     if (g.setupMode) ImGui::TextDisabled("Final quality (anti-aliasing, shadow detail) is set\nin Effect Controls > Realism.");
+    sectionHeader("Lens");
+    ImGui::Checkbox("Depth of field", &s.lens.dof);
+    tooltip("Blurs things in front of and behind the focus point, like a real camera lens.");
+    if (s.lens.dof) {
+        ImGui::Checkbox("Focus on the middle of the scene", &s.lens.autoFocus);
+        if (!s.lens.autoFocus) { ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Focus distance", &s.lens.focus, 0.1f, 60, "%.2f", ImGuiSliderFlags_Logarithmic); }
+        ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Blur", &s.lens.aperture, 0, 1, "%.2f");
+        if (g.setupMode) ImGui::TextDisabled("Rack focus with Lens & Fog > Focus Offset.");
+    }
+    sectionHeader("Fog");
+    ImGui::Checkbox("Distance fog", &s.fog.enabled);
+    if (s.fog.enabled) {
+        ImGui::Checkbox("Fade out instead of colour", &s.fog.fadeOut);
+        if (!s.fog.fadeOut) { ImGui::SetNextItemWidth(w); ImGui::ColorEdit3("Fog colour", &s.fog.color.x); }
+        ImGui::SetNextItemWidth(w); ImGui::DragFloatRange2("Start / end", &s.fog.start, &s.fog.end, 0.05f, 0.f, 500.f, "%.1f", "%.1f");
+        ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Amount##fog", &s.fog.amount, 0, 1, "%.2f");
+    }
     sectionHeader("Effects");
     ImGui::SetNextItemWidth(w); ImGui::SliderFloat("Glow", &s.glow, 0, 2, "%.2f");
     tooltip("Bloom around bright highlights and glowing materials.");
@@ -1033,7 +1416,7 @@ static void worldProps() {
     float secs = s.comp.frames / s.comp.fps;
     ImGui::SetNextItemWidth(w);
     if (ImGui::DragFloat("Duration", &secs, 0.05f, 0.1f, 600.f, "%.2f sec")) s.comp.frames = std::max(1, (int)std::round(secs * s.comp.fps));
-    ImGui::TextDisabled("Match these to your Premiere sequence.");
+    ImGui::TextDisabled("Match these to your sequence / comp.");
     }
 
     sectionHeader("Reference footage (preview only)");
@@ -1103,8 +1486,10 @@ static void viewportBody() {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 origin = ImGui::GetCursorScreenPos();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), IM_COL32(17, 17, 19, 255), 12);
-    float toolbarH = 34;
+    dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), ST_VIEW);
+    dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + 30), ST_PANEL);
+    dl->AddLine(ImVec2(origin.x, origin.y + 30), ImVec2(origin.x + avail.x, origin.y + 30), ST_LINE);
+    float toolbarH = 30;
     ImVec2 area(avail.x - 24, avail.y - toolbarH - 16);
     float aspect = g.S.comp.width / (float)g.S.comp.height;
     ImVec2 sz = area;
@@ -1137,7 +1522,14 @@ static void viewportBody() {
     int rw = std::max(16, (int)(sz.x * dpi / scaleDiv)), rh = std::max(16, (int)(sz.y * dpi / scaleDiv));
     g.viewRT.ensure(rw, rh, 4);
     ViewOptions vo; vo.preview = true; vo.grid = g.showGrid; vo.selected = g.sel.kind == Selection::Obj ? g.sel.id : -1;
+    if (g_animPreviewT >= 0) {  // a title animation was just picked: play it once in the viewer
+        float t = (float)((ImGui::GetTime() - g_animPreviewT) / 1.4);
+        g.previewLetters = std::min(100.f, t * 100.f);
+        if (t >= 1.f) g_animPreviewT = -1;
+    }
     if (g.setupMode) setLetterFrames(g.S, g.previewLetters);
+    g.S.live.shatter = g.previewShatter / 100.f;
+    g.S.live.repBuild = g.previewRepBuild / 100.f;
     unsigned tex = g.R.render(g.S, g.frame, g.viewRT, vo);
     // ImGui renders with straight-alpha blending; our texture is premultiplied, so use a callback to switch blend mode
     dl->AddCallback([](const ImDrawList*, const ImDrawCmd*) { glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }, nullptr);
@@ -1184,6 +1576,50 @@ static void viewportBody() {
         gizmoUsing = ImGuizmo::IsUsing() || ImGuizmo::IsOver();
         gizmoHot = gizmoUsing;
     }
+    // lights: markers in the viewer, and the move gizmo on the selected one
+    auto toScreen = [&](vec3 w, ImVec2& out) -> bool {
+        glm::vec4 cl = cam.proj * cam.view * glm::vec4(w, 1);
+        if (cl.w <= 1e-4f) return false;
+        vec3 n = vec3(cl) / cl.w;
+        out = ImVec2(p0.x + (n.x * .5f + .5f) * sz.x, p0.y + (1 - (n.y * .5f + .5f)) * sz.y);
+        return std::fabs(n.x) < 1.2f && std::fabs(n.y) < 1.2f;
+    };
+    // a sun is a direction: show its handle on a sphere around the camera target, sized to stay in view
+    vec3 sunC = g.S.cam.target.eval(g.frame);
+    float sunR = 0.28f * glm::length(g.S.cam.pos.eval(g.frame) - sunC);
+    auto lightHandle = [&](const Light& l) { vec3 p = l.pos.eval(g.frame); return l.type == 0 ? sunC + glm::normalize(p + vec3(1e-6f)) * sunR : p; };
+    int lightHit = -1;
+    {
+        ImVec2 o0; bool haveO = toScreen(sunC, o0);
+        dl->PushClipRect(p0, p1, true);
+        for (int i = 0; i < (int)g.S.lights.size(); i++) {
+            const Light& l = g.S.lights[i]; ImVec2 sp;
+            if (!toScreen(lightHandle(l), sp)) continue;
+            bool sel = g.sel.kind == Selection::Light && g.sel.id == i;
+            ImU32 col = !l.enabled ? IM_COL32(120, 120, 120, 200) : sel ? GOLD32 : IM_COL32(240, 236, 226, 230);
+            if (l.type == 0 && haveO) dl->AddLine(sp, o0, (col & 0x00FFFFFF) | 0x60000000, 1.f);  // o0 = where the sun points
+            dl->AddCircleFilled(sp, 6.f, col);
+            for (int k = 0; k < 8; k++) { float a = k * 0.785f; dl->AddLine(ImVec2(sp.x + std::cos(a) * 9, sp.y + std::sin(a) * 9), ImVec2(sp.x + std::cos(a) * 12, sp.y + std::sin(a) * 12), col, 1.5f); }
+            if (sel) dl->AddCircle(sp, 15.f, col, 0, 1.5f);
+            ImVec2 m = ImGui::GetIO().MousePos;
+            if (hovered && (m.x - sp.x) * (m.x - sp.x) + (m.y - sp.y) * (m.y - sp.y) < 15 * 15) lightHit = i;
+        }
+        dl->PopClipRect();
+        if (lightHit >= 0) ImGui::SetTooltip("%s - click to select, then drag the arrows to move it", g.S.lights[lightHit].name.c_str());
+    }
+    if (g.sel.kind == Selection::Light && g.sel.id >= 0 && g.sel.id < (int)g.S.lights.size()) {
+        Light& l = g.S.lights[g.sel.id];
+        mat4 M = glm::translate(mat4(1), lightHandle(l));
+        ImGuizmo::PushID(9000 + g.sel.id);
+        if (ImGuizmo::Manipulate(glm::value_ptr(cam.view), glm::value_ptr(cam.proj), ImGuizmo::TRANSLATE, ImGuizmo::WORLD, glm::value_ptr(M))) {
+            vec3 np = vec3(M[3]);
+            if (l.type == 0) np = glm::normalize(np - sunC + vec3(1e-6f)) * std::max(0.1f, glm::length(l.pos.eval(g.frame)));
+            l.pos.set(currentFrameInt(), np);
+        }
+        ImGuizmo::PopID();
+        gizmoUsing = gizmoUsing || ImGuizmo::IsUsing() || ImGuizmo::IsOver();
+        gizmoHot = gizmoUsing;
+    }
     // camera navigation
     ImGuiIO& io = ImGui::GetIO();
     auto& c = g.S.cam;
@@ -1220,22 +1656,24 @@ static void viewportBody() {
         vec3 ro = vec3(a) / a.w, rd = glm::normalize(vec3(b) / b.w - ro);
         float best = 1e30f; int bestId = -1;
         for (auto& o : g.S.objects) { float t; if (rayHitObject(o, ro, rd, t) && t < best) { best = t; bestId = o.id; } }
-        if (bestId >= 0) g.sel = {Selection::Obj, bestId};
-        else if (g.sel.kind == Selection::Obj) g.sel.kind = Selection::None;
+        if (lightHit >= 0) g.sel = {Selection::Light, lightHit};
+        else if (bestId >= 0) g.sel = {Selection::Obj, bestId};
+        else if (g.sel.kind == Selection::Obj || g.sel.kind == Selection::Light) g.sel.kind = Selection::None;
     }
     // toolbar
-    ImGui::SetCursorScreenPos(ImVec2(origin.x + 10, origin.y + 6));
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + 8, origin.y + 3));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 3));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
     auto tb = [&](const char* label, bool on, const char* tip) {
-        if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.23f, 0.21f, 0.38f, 1));
+        ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(0.92f, 0.92f, 0.93f, 1) : ImVec4(0.6f, 0.6f, 0.63f, 1));
         bool r = ImGui::Button(label);
-        if (on) ImGui::PopStyleColor();
-        tooltip(tip); ImGui::SameLine(0, 4);
+        ImGui::PopStyleColor();
+        tooltip(tip); ImGui::SameLine(0, 2);
         return r;
     };
-    if (tb("Move", g.gizmoOp == 0, "Move (W)")) g.gizmoOp = 0;
-    if (tb("Rotate", g.gizmoOp == 1, "Rotate (E)")) g.gizmoOp = 1;
-    if (tb("Scale", g.gizmoOp == 2, "Scale (R)")) g.gizmoOp = 2;
-    ImGui::SameLine(0, 10);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Camera"); ImGui::SameLine(0, 6); ImGui::TextDisabled("Perspective"); ImGui::SameLine(0, 16);
     if (tb(g.gizmoWorld ? "World" : "Local", false, "Gizmo axes: world or object")) g.gizmoWorld = !g.gizmoWorld;
     ImGui::SameLine(0, 10);
     if (tb("Frame", false, "Frame the selection (F)")) frameSelected();
@@ -1248,8 +1686,8 @@ static void viewportBody() {
     const char* qs[] = {"Full", "Half", "Quarter"};
     ImGui::SetNextItemWidth(90);
     ImGui::Combo("##q", &g.previewScale, qs, 3); tooltip("Preview resolution - lower is faster");
-    ImGui::SameLine(0, 10);
-    ImGui::TextDisabled("%d×%d  %g fps", g.S.comp.width, g.S.comp.height, g.S.comp.fps);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
 }
 
 // ============================================================ timeline
@@ -1320,8 +1758,8 @@ static void togglePlay() {
     else g.frame = (float)currentFrameInt();
 }
 
-static void timelinePanel() {
-    ImGui::Begin("Timeline", nullptr, ImGuiWindowFlags_NoScrollbar);
+static void timelineBody() {
+
     int F = std::max(1, g.S.comp.frames);
     // transport
     if (iconButton("##start", 0, "Go to start (Home)")) g.frame = 0;
@@ -1514,6 +1952,11 @@ static void timelinePanel() {
     }
     if (hov && !g.tlDragging) ImGui::SetTooltip("Frame %d  -  drag to move, right-click for easing", hov->frame);
     ImGui::EndChild();
+
+}
+static void timelinePanel() {
+    ImGui::Begin("Timeline", nullptr, ImGuiWindowFlags_NoScrollbar);
+    timelineBody();
     ImGui::End();
 }
 
@@ -1523,7 +1966,7 @@ static void setupFinish(bool apply) {
         Scene copy = g.S; copy.refPath.clear();
         std::string j = sceneToJson(copy);
         FILE* f = _wfopen(widen(g.setupOut).c_str(), L"wb");
-        if (!f) { notify("Couldn't hand the scene back to Premiere."); return; }
+        if (!f) { notify("Couldn't hand the scene back to Premiere / After Effects."); return; }
         fwrite(j.data(), 1, j.size(), f); fclose(f);
     }
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown(); ImGui::DestroyContext(); glfwTerminate();
@@ -1540,8 +1983,10 @@ static void previewPanel() {
     ImGui::SliderFloat("##lb", &g.previewLetters, 0, 100, "%.0f%%");
     ImGui::EndDisabled();
     if (!anyLetters) { ImGui::SameLine(); ImGui::TextDisabled("(turn on letter animation in a text's Animate tab)"); }
+    ImGui::SameLine(0, 30); ImGui::TextDisabled("Shatter"); ImGui::SameLine();
+    ImGui::SetNextItemWidth(200); ImGui::SliderFloat("##sh", &g.previewShatter, 0, 100, "%.0f%%");
     ImGui::SameLine(0, 30);
-    ImGui::TextDisabled("Keyframe everything in Premiere's Effect Controls after you click OK.");
+    ImGui::TextDisabled("Keyframe everything in Effect Controls after you click OK.");
     ImGui::End();
 }
 
@@ -1641,13 +2086,20 @@ static void exportDialog() {
 
 // ============================================================ menus, shortcuts, layout
 static void menuBar() {
-    if (ImGui::BeginMainMenuBar()) {
-        if (g.logoTex) {
-            float h = ImGui::GetFrameHeight() - 4;
-            ImGui::Image((ImTextureID)(intptr_t)g.logoTex, ImVec2(h * g.logoW / (float)g.logoH, h));
-            ImGui::SameLine(0, 6);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 8));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.66f, 0.66f, 0.68f, 1));
+    bool mb = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (mb) {
+        {
+            ImVec2 p = ImGui::GetCursorScreenPos();
+            float h = ImGui::GetWindowHeight();
+            drawLampMark(ImGui::GetWindowDrawList(), ImVec2(p.x + 2, p.y + (h - 16) * .5f - p.y + ImGui::GetWindowPos().y));
+            ImGui::Dummy(ImVec2(20, 1)); ImGui::SameLine(0, 4);
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y + h - .5f), ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth(), ImGui::GetWindowPos().y + h - .5f), ST_LINE);
         }
-        ImGui::PushFont(g.fBold, 0); ImGui::TextColored(GOLD, "Element Genie"); ImGui::PopFont();
+        ImGui::PushFont(g.fBold, 0); ImGui::TextColored(ImVec4(0.93f, 0.93f, 0.94f, 1), "Element Genie"); ImGui::PopFont();
         ImGui::SameLine(0, 18);
         if (ImGui::BeginMenu("File")) {
             if (g.setupMode) {
@@ -1664,7 +2116,7 @@ static void menuBar() {
             if (ImGui::MenuItem("Import 3D model...", "Ctrl+I")) addModelDialog();
             if (ImGui::MenuItem("Import logo...")) addLogoDialog();
             ImGui::Separator();
-            if (!g.setupMode) { if (ImGui::MenuItem("Export for Premiere...", "Ctrl+M")) g.exportDialog = true; ImGui::Separator(); }
+            if (!g.setupMode) { if (ImGui::MenuItem("Export video...", "Ctrl+M")) g.exportDialog = true; ImGui::Separator(); }
             if (ImGui::MenuItem(g.setupMode ? "Close" : "Quit")) g.wantClose = true;
             ImGui::EndMenu();
         }
@@ -1707,9 +2159,12 @@ static void menuBar() {
         ImGui::SetCursorPosX(w * .5f - ts.x * .5f);
         ImGui::TextDisabled("%s", title.c_str());
         if (g.setupMode) {
+            char info[96]; snprintf(info, sizeof info, "%d x %d  ·  %g fps", g.S.comp.width, g.S.comp.height, g.S.comp.fps);
+            ImGui::SetCursorPosX(w - 14 - ImGui::CalcTextSize(info).x);
+            ImGui::TextDisabled("%s", info);
         } else {
         ImGui::SetCursorPosX(w - 190);
-        if (goldButton("Export for Premiere", ImVec2(176, 0))) g.exportDialog = true;
+        if (goldButton("Export video", ImVec2(176, 0))) g.exportDialog = true;
         }
         ImGui::EndMainMenuBar();
     }
@@ -1771,7 +2226,7 @@ static void popups() {
         if (g.logoTex) { ImGui::Image((ImTextureID)(intptr_t)g.logoTex, ImVec2(64.f * g.logoW / g.logoH, 64)); ImGui::SameLine(); }
         ImGui::BeginGroup();
         ImGui::PushFont(g.fBold, 22); ImGui::TextColored(GOLD, "Element Genie"); ImGui::PopFont();
-        ImGui::Text("Version %s  -  open-source 3D titles & models for Premiere Pro", APP_VERSION);
+        ImGui::Text("Version %s  -  open-source 3D titles & models for Premiere Pro and After Effects", APP_VERSION);
         ImGui::EndGroup();
         ImGui::Spacing();
         ImGui::TextDisabled("Built with: Dear ImGui, ImGuizmo, GLFW, ufbx, cgltf, stb, nanosvg,\nearcut, GLM, nlohmann/json, Inter typeface (OFL).");
@@ -1797,7 +2252,7 @@ static void popups() {
     // unsaved changes
     if (g.wantClose && g.setupMode) { g.wantClose = false; if (!g.dirty) setupFinish(false); ImGui::OpenPopup("Apply changes?"); }
     if (ImGui::BeginPopupModal("Apply changes?", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::Text("Send this scene back to Premiere?");
+        ImGui::Text("Send this scene back to Premiere / After Effects?");
         if (goldButton("Apply")) setupFinish(true);
         ImGui::SameLine(); if (ImGui::Button("Discard")) setupFinish(false);
         ImGui::SameLine(); if (ImGui::Button("Keep editing")) ImGui::CloseCurrentPopup();
@@ -1819,33 +2274,69 @@ static void popups() {
         ImVec2 pos(vp->WorkPos.x + vp->WorkSize.x * .5f - ts.x * .5f - 16, vp->WorkPos.y + 50);
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         float a = std::min(1.0, (g.toastUntil - ImGui::GetTime()) * 2);
-        dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + 32, pos.y + ts.y + 18), IM_COL32(36, 34, 52, (int)(240 * a)), 8);
-        dl->AddRect(pos, ImVec2(pos.x + ts.x + 32, pos.y + ts.y + 18), IM_COL32(139, 123, 255, (int)(160 * a)), 8);
+        dl->AddRectFilled(pos, ImVec2(pos.x + ts.x + 32, pos.y + ts.y + 18), IM_COL32(36, 36, 39, (int)(245 * a)), 3);
+        dl->AddRect(pos, ImVec2(pos.x + ts.x + 32, pos.y + ts.y + 18), IM_COL32(70, 70, 76, (int)(255 * a)), 3);
         dl->AddText(ImVec2(pos.x + 16, pos.y + 9), IM_COL32(240, 236, 228, (int)(255 * a)), g.toast.c_str());
     }
 }
 
 // ============================================================ Scene Setup layout (preset browser · viewport · scene tree · edit)
-static int g_presetTab = 0, g_browserTab = 0;
-static void beginCard(const char* id, ImVec2 size) {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 10));
-    ImGui::BeginChild(id, size, ImGuiChildFlags_AlwaysUseWindowPadding);
+static int g_presetTab = 4, g_browserTab = 0;  // 4 = Titles (shown first)
+static void beginCard(const char* id, ImVec2 size, ImU32 bg = ST_PANEL) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(bg));
+    ImGui::BeginChild(id, size, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleColor();
     ImGui::PopStyleVar();
 }
-static void cardTitle(const char* t) {
-    ImGui::PushFont(g.fBold, 0); ImGui::TextUnformatted(t); ImGui::PopFont();
+// 30px header band with a hairline underneath (Adobe-style panel header)
+static void panelHeader(const char* title, const char* sub = nullptr) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos(); float w = ImGui::GetContentRegionAvail().x;
+    dl->AddLine(ImVec2(p.x, p.y + 29.5f), ImVec2(p.x + w, p.y + 29.5f), ST_LINE);
+    ImGui::PushFont(g.fBold, 0);
+    float th = ImGui::GetTextLineHeight();
+    dl->AddText(ImVec2(p.x + 12, p.y + (30 - th) * .5f), ST_HEAD, title);
+    float tw = ImGui::CalcTextSize(title).x;
+    ImGui::PopFont();
+    if (sub && *sub) {
+        ImGui::PushFont(nullptr, 11.5f);
+        float sh = ImGui::GetTextLineHeight();
+        dl->AddText(ImVec2(p.x + 12 + tw + 8, p.y + (30 - sh) * .5f + 1), IM_COL32(112, 112, 119, 255), sub);
+        ImGui::PopFont();
+    }
+    ImGui::Dummy(ImVec2(w, 30));
 }
+// Text tabs with a thin violet underline on the selected one
 static bool pillTabs(const char* const* names, int n, int& cur) {
     bool ch = false;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p0 = ImGui::GetCursorScreenPos(); float w = ImGui::GetContentRegionAvail().x;
+    dl->AddLine(ImVec2(p0.x, p0.y + 29.5f), ImVec2(p0.x + w, p0.y + 29.5f), ST_LINE);
+    float x = p0.x + 12;
     for (int i = 0; i < n; i++) {
-        if (i) ImGui::SameLine(0, 4);
+        ImVec2 ts = ImGui::CalcTextSize(names[i]);
+        ImGui::SetCursorScreenPos(ImVec2(x - 4, p0.y));
+        ImGui::PushID(names[i]);
+        if (ImGui::InvisibleButton("t", ImVec2(ts.x + 8, 30))) { cur = i; ch = true; }
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
         bool on = cur == i;
-        ImGui::PushStyleColor(ImGuiCol_Button, on ? ImVec4(0.23f, 0.21f, 0.38f, 1) : ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_Text, on ? GOLD : ImVec4(0.62f, 0.62f, 0.68f, 1));
-        if (ImGui::Button(names[i])) { cur = i; ch = true; }
-        ImGui::PopStyleColor(2);
+        if (on) ImGui::PushFont(g.fBold, 0);
+        dl->AddText(ImVec2(x, p0.y + (30 - ts.y) * .5f), on ? ST_HEAD : hov ? ST_TEXT : ST_DIM, names[i]);
+        if (on) { ImGui::PopFont(); dl->AddRectFilled(ImVec2(x - 1, p0.y + 28), ImVec2(x + ts.x + 1, p0.y + 30), GOLD32); }
+        x += ts.x + 16;
     }
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, p0.y + 30));
+    ImGui::Dummy(ImVec2(w, 0));
     return ch;
+}
+static void vDivider(float h = 22) {
+    ImGui::SameLine(0, 8);
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(p.x, p.y + (30 - h) * .5f), ImVec2(p.x, p.y + (30 + h) * .5f), IM_COL32(51, 51, 56, 255));
+    ImGui::Dummy(ImVec2(1, 30));
+    ImGui::SameLine(0, 8);
 }
 static void toolIcon(ImDrawList* dl, ImVec2 c, int kind, ImU32 col) {
     float t = 1.8f;
@@ -1867,18 +2358,61 @@ static void toolIcon(ImDrawList* dl, ImVec2 c, int kind, ImU32 col) {
 }
 static bool toolButton(const char* label, int kind, bool active, const char* tip) {
     ImVec2 p = ImGui::GetCursorScreenPos();
+    ImVec2 ts = ImGui::CalcTextSize(label);
+    float w = 10 + 18 + 6 + ts.x + 10, h = 30;
     ImGui::PushID(label);
-    bool r = ImGui::InvisibleButton("tb", ImVec2(70, 52));
+    bool r = ImGui::InvisibleButton("tb", ImVec2(w, h));
     bool hov = ImGui::IsItemHovered();
     ImGui::PopID();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (active || hov) dl->AddRectFilled(p, ImVec2(p.x + 70, p.y + 52), active ? IM_COL32(58, 53, 96, 255) : IM_COL32(50, 50, 58, 255), 10);
-    ImU32 col = active ? GOLD32 : IM_COL32(215, 215, 222, 255);
-    toolIcon(dl, ImVec2(p.x + 35, p.y + 19), kind, col);
-    ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText(ImVec2(p.x + 35 - ts.x * .5f, p.y + 33), col, label);
+    if (active) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ST_SEL, 3);
+    else if (hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(44, 44, 48, 255), 3);
+    ImU32 col = active ? IM_COL32(236, 233, 255, 255) : IM_COL32(181, 181, 186, 255);
+    // icons are drawn on an 18px box; scale them down a touch for the compact bar
+    int v0 = dl->VtxBuffer.Size;
+    toolIcon(dl, ImVec2(0, 0), kind, col);
+    for (int i = v0; i < dl->VtxBuffer.Size; i++) { auto& v = dl->VtxBuffer[i]; v.pos.x = p.x + 19 + v.pos.x * 0.72f; v.pos.y = p.y + 15 + v.pos.y * 0.72f; }
+    dl->AddText(ImVec2(p.x + 10 + 18 + 6, p.y + (h - ts.y) * .5f), active ? IM_COL32(255, 255, 255, 255) : ST_TEXT, label);
     if (hov && tip) ImGui::SetTooltip("%s", tip);
     return r;
+}
+// Move / Rotate / Scale segmented control
+static void gizmoSegment() {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    const char* tips[3] = {"Move (W)", "Rotate (E)", "Scale (R)"};
+    float bw = 32, h = 28;
+    for (int i = 0; i < 3; i++) {
+        ImVec2 q(p.x + i * bw, p.y + 1);
+        ImGui::SetCursorScreenPos(q);
+        ImGui::PushID(i);
+        if (ImGui::InvisibleButton("gz", ImVec2(bw, h))) g.gizmoOp = i;
+        bool hov = ImGui::IsItemHovered();
+        ImGui::PopID();
+        bool on = g.gizmoOp == i;
+        if (on) dl->AddRectFilled(q, ImVec2(q.x + bw, q.y + h), IM_COL32(59, 54, 84, 255), i == 0 ? 3 : i == 2 ? 3 : 0, i == 0 ? ImDrawFlags_RoundCornersLeft : i == 2 ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersNone);
+        else if (hov) dl->AddRectFilled(q, ImVec2(q.x + bw, q.y + h), IM_COL32(44, 44, 48, 255));
+        ImU32 col = on ? IM_COL32(230, 226, 255, 255) : IM_COL32(181, 181, 186, 255);
+        ImVec2 c(q.x + bw * .5f, q.y + h * .5f);
+        if (i == 0) {
+            dl->AddLine(ImVec2(c.x, c.y - 6.5f), ImVec2(c.x, c.y + 6.5f), col, 1.3f); dl->AddLine(ImVec2(c.x - 6.5f, c.y), ImVec2(c.x + 6.5f, c.y), col, 1.3f);
+            dl->AddTriangleFilled(ImVec2(c.x, c.y - 8), ImVec2(c.x - 2.5f, c.y - 5), ImVec2(c.x + 2.5f, c.y - 5), col);
+            dl->AddTriangleFilled(ImVec2(c.x, c.y + 8), ImVec2(c.x + 2.5f, c.y + 5), ImVec2(c.x - 2.5f, c.y + 5), col);
+            dl->AddTriangleFilled(ImVec2(c.x - 8, c.y), ImVec2(c.x - 5, c.y + 2.5f), ImVec2(c.x - 5, c.y - 2.5f), col);
+            dl->AddTriangleFilled(ImVec2(c.x + 8, c.y), ImVec2(c.x + 5, c.y - 2.5f), ImVec2(c.x + 5, c.y + 2.5f), col);
+        } else if (i == 1) {
+            dl->PathArcTo(c, 5.5f, 0.6f, 5.6f, 20); dl->PathStroke(col, 0, 1.3f);
+            dl->AddTriangleFilled(ImVec2(c.x + 7.5f, c.y - 6), ImVec2(c.x + 7.5f, c.y - 1.5f), ImVec2(c.x + 3, c.y - 3.5f), col);
+        } else {
+            dl->AddRect(ImVec2(c.x - 6.5f, c.y - 0.5f), ImVec2(c.x + 0.5f, c.y + 6.5f), col, 0, 0, 1.3f);
+            dl->AddLine(ImVec2(c.x - 1, c.y - 6.5f), ImVec2(c.x + 6.5f, c.y - 6.5f), col, 1.3f); dl->AddLine(ImVec2(c.x + 6.5f, c.y - 6.5f), ImVec2(c.x + 6.5f, c.y + 1), col, 1.3f);
+            dl->AddLine(ImVec2(c.x + 6.5f, c.y - 6.5f), ImVec2(c.x + 1.5f, c.y - 1.5f), col, 1.3f);
+        }
+        if (i) dl->AddLine(ImVec2(q.x, q.y), ImVec2(q.x, q.y + h), IM_COL32(58, 58, 63, 255));
+        if (hov) ImGui::SetTooltip("%s", tips[i]);
+    }
+    dl->AddRect(ImVec2(p.x, p.y + 1), ImVec2(p.x + bw * 3, p.y + 1 + h), IM_COL32(58, 58, 63, 255), 3);
+    ImGui::SetCursorScreenPos(p); ImGui::Dummy(ImVec2(bw * 3, 30));
 }
 static void materialPresetGrid(Material& m) {
     buildMatThumbs();
@@ -1894,14 +2428,14 @@ static void materialPresetGrid(Material& m) {
         float th = cw + 22;
         if (ImGui::InvisibleButton("m", ImVec2(cw, th))) applyMat(m, MATS[i]);
         bool hov = ImGui::IsItemHovered(), cur = m.preset == MATS[i].name;
-        if (g_matThumb[i]) dl->AddImageRounded((ImTextureID)(intptr_t)g_matThumb[i], p, ImVec2(p.x + cw, p.y + cw), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 10);
-        if (cur) dl->AddRect(ImVec2(p.x - 1, p.y - 1), ImVec2(p.x + cw + 1, p.y + cw + 1), GOLD32, 11, 0, 2.f);
-        else if (hov) dl->AddRect(p, ImVec2(p.x + cw, p.y + cw), IM_COL32(120, 120, 135, 255), 10, 0, 1.f);
+        if (g_matThumb[i]) dl->AddImageRounded((ImTextureID)(intptr_t)g_matThumb[i], p, ImVec2(p.x + cw, p.y + cw), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, 3);
+        if (cur) dl->AddRect(ImVec2(p.x - 1, p.y - 1), ImVec2(p.x + cw + 1, p.y + cw + 1), GOLD32, 4, 0, 1.5f);
+        else dl->AddRect(p, ImVec2(p.x + cw, p.y + cw), hov ? IM_COL32(90, 90, 98, 255) : ST_LINE, 3, 0, 1.f);
         const char* nm = MATS[i].name;
         ImGui::PushFont(nullptr, 11.5f);
         ImVec2 ts = ImGui::CalcTextSize(nm);
         dl->PushClipRect(ImVec2(p.x, p.y + cw), ImVec2(p.x + cw, p.y + th), true);
-        dl->AddText(ImVec2(p.x + std::max(0.f, (cw - ts.x) * .5f), p.y + cw + 4), cur ? GOLD32 : IM_COL32(190, 190, 200, 255), nm);
+        dl->AddText(ImVec2(p.x + std::max(0.f, (cw - ts.x) * .5f), p.y + cw + 4), cur ? ST_HEAD : IM_COL32(154, 154, 160, 255), nm);
         dl->PopClipRect();
         ImGui::PopFont();
         if (hov) ImGui::SetTooltip("%s", nm);
@@ -1923,8 +2457,9 @@ static void envPresetGrid() {
         if (ImGui::InvisibleButton("e", ImVec2(cw, 54))) g.S.env.preset = eps[i].id;
         bool cur = g.S.env.preset == eps[i].id;
         dl->AddRectFilledMultiColor(ImVec2(p.x + 6, p.y + 6), ImVec2(p.x + 46, p.y + 48), eps[i].top, eps[i].top, eps[i].bot, eps[i].bot);
-        dl->AddRect(p, ImVec2(p.x + cw, p.y + 54), cur ? GOLD32 : IM_COL32(60, 60, 68, 255), 10, 0, cur ? 2.f : 1.f);
-        dl->AddText(ImVec2(p.x + 54, p.y + 18), cur ? GOLD32 : IM_COL32(215, 215, 222, 255), ENV_NAMES[eps[i].id]);
+        dl->AddRect(p, ImVec2(p.x + cw, p.y + 54), cur ? GOLD32 : ST_LINE, 3, 0, cur ? 1.5f : 1.f);
+        float ww = cw - 60; ImVec2 ts = ImGui::CalcTextSize(ENV_NAMES[eps[i].id], nullptr, false, ww);
+        dl->AddText(nullptr, 0.f, ImVec2(p.x + 54, p.y + (54 - ts.y) * .5f), cur ? ST_HEAD : IM_COL32(190, 190, 194, 255), ENV_NAMES[eps[i].id], nullptr, ww);
         ImGui::PopID();
     }
     if (ImGui::Button("Load HDRI image...", ImVec2(-1, 0))) {
@@ -1934,14 +2469,15 @@ static void envPresetGrid() {
     if (g.S.env.preset < 0) ImGui::TextDisabled("Using %s", baseName(g.S.env.path).c_str());
     ImGui::TextDisabled("Free HDRIs: polyhaven.com");
 }
-static void presetsCard(ImVec2 size) {
-    beginCard("presets", size);
-    cardTitle("Presets");
-    static const char* tabs[] = {"Materials", "Bevels", "Lighting"};
-    pillTabs(tabs, 3, g_presetTab);
-    ImGui::BeginChild("presetsBody", ImVec2(0, 0), ImGuiChildFlags_None);
+// Library: Materials · Bevels · Lighting · Models (icons / shapes / imported models)
+static void libraryBody() {
     Object* o = selectedObject();
-    if (g_presetTab == 0) {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+    ImGui::BeginChild("libBody", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PopStyleVar();
+    if (g_presetTab == 4) {
+        titlesBody();
+    } else if (g_presetTab == 0) {
         if (!o) ImGui::TextDisabled("Select an object to give it a material.");
         else if (o->type == ObjType::Model && o->keepModelMaterials) {
             ImGui::TextWrapped("This model uses its own materials.");
@@ -1950,72 +2486,119 @@ static void presetsCard(ImVec2 size) {
     } else if (g_presetTab == 1) {
         if (o && (o->type == ObjType::Text || o->type == ObjType::Logo)) bevelPicker(*o);
         else ImGui::TextDisabled("Select a text or logo to choose its bevel.");
-    } else envPresetGrid();
-    ImGui::EndChild();
-    ImGui::EndChild();
-}
-static void browserCard(ImVec2 size) {
-    beginCard("browser", size);
-    cardTitle("Model Browser");
-    static const char* tabs[] = {"Icons", "Shapes", "Models"};
-    pillTabs(tabs, 3, g_browserTab);
-    ImGui::BeginChild("browserBody", ImVec2(0, 0), ImGuiChildFlags_None);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    float avail = ImGui::GetContentRegionAvail().x;
-    if (g_browserTab == 0) {
-        int per = std::max(1, (int)(avail / 58)); float cw = (avail - (per - 1) * 6) / per;
-        for (int i = 0; i < ICON_COUNT; i++) {
-            if (i % per) ImGui::SameLine(0, 6);
-            ImGui::PushID(800 + i);
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            if (ImGui::InvisibleButton("ic", ImVec2(cw, cw))) addIcon(ICONS[i].name);
-            bool hov = ImGui::IsItemHovered();
-            ImU32 bg = hov ? IM_COL32(58, 53, 96, 255) : IM_COL32(50, 50, 56, 255);
-            dl->AddRectFilled(p, ImVec2(p.x + cw, p.y + cw), bg, 10);
-            drawIconThumb(dl, ImVec2(p.x + cw * .2f, p.y + cw * .2f), cw * .6f, i, IM_COL32(211, 208, 232, 255), bg);
-            if (hov) ImGui::SetTooltip("Add %s", ICONS[i].name);
-            ImGui::PopID();
-        }
-    } else if (g_browserTab == 1) {
-        struct SP { const char* n; Prim p; };
-        static const SP sp[] = {{"Cube", Prim::Cube}, {"Rounded cube", Prim::RoundCube}, {"Sphere", Prim::Sphere}, {"Cylinder", Prim::Cylinder},
-                                {"Torus", Prim::Torus}, {"Cone", Prim::Cone}, {"Capsule", Prim::Capsule}, {"Gem", Prim::Gem}, {"Floor plane", Prim::Plane}};
-        float cw = (avail - 6) / 2;
-        for (int i = 0; i < 9; i++) { if (i % 2) ImGui::SameLine(0, 6); if (ImGui::Button(sp[i].n, ImVec2(cw, 34))) addPrimitive(sp[i].p); }
-        if (ImGui::Button("Image card...", ImVec2(-1, 34))) {
-            std::string pth = openFileDialog("Image card", "Images|*.png;*.jpg;*.jpeg|All files|*.*", g.hwnd);
-            if (!pth.empty()) addImageCard(pth);
-        }
+    } else if (g_presetTab == 2) {
+        envPresetGrid();
     } else {
-        if (goldButton("Import 3D model...", ImVec2(-1, 36))) addModelDialog();
-        ImGui::TextDisabled("GLB, glTF, FBX or OBJ.");
+        // small segmented switch: Icons | Shapes | Models
+        static const char* sub[] = {"Icons", "Shapes", "Models"};
+        float sw = (ImGui::GetContentRegionAvail().x) / 3;
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 6));
+        for (int i = 0; i < 3; i++) {
+            if (i) ImGui::SameLine(0, 0);
+            bool on = g_browserTab == i;
+            ImGui::PushStyleColor(ImGuiCol_Button, on ? ImGui::ColorConvertU32ToFloat4(ST_SEL) : ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_Text, on ? ImVec4(1, 1, 1, 1) : ImVec4(0.6f, 0.6f, 0.63f, 1));
+            if (ImGui::Button(sub[i], ImVec2(sw, 24))) g_browserTab = i;
+            ImGui::PopStyleColor(2);
+        }
+        ImGui::PopStyleVar();
         ImGui::Spacing();
-        ImGui::TextUnformatted("Free models:");
-        if (ImGui::Button("Sketchfab (downloadable)", ImVec2(-1, 0))) openUrl("https://sketchfab.com/search?features=downloadable&type=models");
-        if (ImGui::Button("Poly Haven", ImVec2(-1, 0))) openUrl("https://polyhaven.com/models");
-        bool any = false;
-        for (auto& ob : g.S.objects) if (ob.type == ObjType::Model) {
-            if (!any) { ImGui::Spacing(); ImGui::TextDisabled("In this scene"); any = true; }
-            if (ImGui::Selectable(ob.name.c_str(), g.sel.kind == Selection::Obj && g.sel.id == ob.id)) g.sel = {Selection::Obj, ob.id};
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float avail = ImGui::GetContentRegionAvail().x;
+        if (g_browserTab == 0) {
+            int per = std::max(1, (int)(avail / 52)); float cw = (avail - (per - 1) * 6) / per;
+            for (int i = 0; i < ICON_COUNT; i++) {
+                if (i % per) ImGui::SameLine(0, 6);
+                ImGui::PushID(800 + i);
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                if (ImGui::InvisibleButton("ic", ImVec2(cw, cw))) addIcon(ICONS[i].name);
+                bool hov = ImGui::IsItemHovered();
+                ImU32 bg = ST_FIELD;
+                dl->AddRectFilled(p, ImVec2(p.x + cw, p.y + cw), bg, 3);
+                dl->AddRect(p, ImVec2(p.x + cw, p.y + cw), hov ? IM_COL32(90, 90, 98, 255) : ST_LINE, 3);
+                drawIconThumb(dl, ImVec2(p.x + cw * .2f, p.y + cw * .2f), cw * .6f, i, IM_COL32(200, 200, 205, 255), bg);
+                if (hov) ImGui::SetTooltip("Add %s", ICONS[i].name);
+                ImGui::PopID();
+            }
+        } else if (g_browserTab == 1) {
+            struct SP { const char* n; Prim p; };
+            static const SP sp[] = {{"Cube", Prim::Cube}, {"Rounded cube", Prim::RoundCube}, {"Sphere", Prim::Sphere}, {"Cylinder", Prim::Cylinder},
+                                    {"Torus", Prim::Torus}, {"Cone", Prim::Cone}, {"Capsule", Prim::Capsule}, {"Gem", Prim::Gem}, {"Floor plane", Prim::Plane}};
+            float cw = (avail - 6) / 2;
+            for (int i = 0; i < 9; i++) { if (i % 2) ImGui::SameLine(0, 6); if (ImGui::Button(sp[i].n, ImVec2(cw, 28))) addPrimitive(sp[i].p); }
+            if (ImGui::Button("Image card...", ImVec2(-1, 28))) {
+                std::string pth = openFileDialog("Image card", "Images|*.png;*.jpg;*.jpeg|All files|*.*", g.hwnd);
+                if (!pth.empty()) addImageCard(pth);
+            }
+        } else {
+            if (ImGui::Button("Import 3D model...", ImVec2(-1, 28))) addModelDialog();
+            ImGui::TextDisabled("GLB, glTF, FBX or OBJ.");
+            // sample models installed next to Scene Setup (Models folder)
+            static std::vector<std::string> samples; static bool scanned = false;
+            if (!scanned) {
+                scanned = true;
+                WIN32_FIND_DATAW fd; std::wstring dir = widen(exeDir() + "Models\\");
+                HANDLE h = FindFirstFileW((dir + L"*").c_str(), &fd);
+                if (h != INVALID_HANDLE_VALUE) {
+                    do {
+                        std::string n = narrow(fd.cFileName); std::string e = n.size() > 4 ? n.substr(n.find_last_of('.') + 1) : "";
+                        for (auto& ch : e) ch = (char)tolower(ch);
+                        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && (e == "glb" || e == "gltf" || e == "fbx" || e == "obj")) samples.push_back(n);
+                    } while (FindNextFileW(h, &fd));
+                    FindClose(h);
+                }
+            }
+            if (!samples.empty()) {
+                ImGui::Spacing(); ImGui::TextUnformatted("Sample models");
+                for (auto& n : samples) {
+                    std::string label = n.substr(0, n.find_last_of('.'));
+                    if (ImGui::Button(label.c_str(), ImVec2(-1, 28))) importFile(exeDir() + "Models\\" + n);
+                }
+            }
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Free models");
+            if (ImGui::Button("Sketchfab (downloadable)", ImVec2(-1, 0))) openUrl("https://sketchfab.com/search?features=downloadable&type=models");
+            if (ImGui::Button("Poly Haven", ImVec2(-1, 0))) openUrl("https://polyhaven.com/models");
+            bool any = false;
+            for (auto& ob : g.S.objects) if (ob.type == ObjType::Model) {
+                if (!any) { ImGui::Spacing(); ImGui::TextDisabled("In this scene"); any = true; }
+                if (ImGui::Selectable(ob.name.c_str(), g.sel.kind == Selection::Obj && g.sel.id == ob.id)) g.sel = {Selection::Obj, ob.id};
+            }
         }
     }
     ImGui::EndChild();
-    ImGui::EndChild();
 }
-static const ImU32 GROUP_COLS[5] = {IM_COL32(139, 123, 255, 255), IM_COL32(63, 163, 255, 255), IM_COL32(47, 209, 181, 255), IM_COL32(255, 107, 139, 255), IM_COL32(255, 176, 90, 255)};
-static void sceneCard(ImVec2 size) {
-    beginCard("scene", size);
-    cardTitle("Scene");
-    ImGui::BeginChild("sceneBody", ImVec2(0, 0), ImGuiChildFlags_None);
+static const ImU32 GROUP_COLS[5] = {IM_COL32(139, 123, 255, 255), IM_COL32(74, 163, 255, 255), IM_COL32(60, 199, 168, 255), IM_COL32(255, 107, 139, 255), IM_COL32(224, 176, 90, 255)};
+// One flat row in the scene outline: indent, colour chip, name, kind on the right
+static bool outlineRow(const char* name, const char* kind, int depth, ImU32 chip, bool sel, bool dim = false) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos(); float w = ImGui::GetContentRegionAvail().x;
+    bool r = ImGui::InvisibleButton("row", ImVec2(w, 24));
+    bool hov = ImGui::IsItemHovered();
+    if (sel) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 24), ST_SEL);
+    else if (hov) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + 24), IM_COL32(40, 40, 44, 255));
+    float x = p.x + 12 + depth * 14;
+    if (chip) dl->AddRectFilled(ImVec2(x, p.y + 8), ImVec2(x + 8, p.y + 16), chip, 2);
+    float th = ImGui::GetTextLineHeight();
+    dl->AddText(ImVec2(x + (chip ? 16 : 0), p.y + (24 - th) * .5f), sel ? IM_COL32(255, 255, 255, 255) : dim ? ST_DIM : IM_COL32(200, 200, 204, 255), name);
+    if (kind && *kind) {
+        ImGui::PushFont(nullptr, 11.5f);
+        ImVec2 ks = ImGui::CalcTextSize(kind);
+        dl->AddText(ImVec2(p.x + w - 10 - ks.x, p.y + (24 - ImGui::GetTextLineHeight()) * .5f), IM_COL32(112, 112, 119, 255), kind);
+        ImGui::PopFont();
+    }
+    return r;
+}
+static void sceneOutline() {
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+    ImGui::BeginChild("sceneBody", ImVec2(0, ImGui::GetContentRegionAvail().y), ImGuiChildFlags_None);
+    ImGui::Dummy(ImVec2(1, 4));
     for (int gi = 0; gi < 5; gi++) {
         int count = 0; for (auto& o : g.S.objects) if (o.group == gi) count++;
+        if (count == 0 && gi > 2) continue;  // show groups 1-3 always, 4-5 once used
         ImGui::PushID(gi);
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        char lbl[32]; snprintf(lbl, sizeof lbl, "     Group %d", gi + 1);
-        ImGui::SetNextItemOpen(count > 0, ImGuiCond_Once);
-        bool open = ImGui::TreeNodeEx(lbl, ImGuiTreeNodeFlags_SpanAvailWidth | (count == 0 ? ImGuiTreeNodeFlags_Leaf : 0));
-        dl->AddRectFilled(ImVec2(p.x + 22, p.y + 6), ImVec2(p.x + 32, p.y + 16), GROUP_COLS[gi], 3);
+        char lbl[32]; snprintf(lbl, sizeof lbl, "Group %d", gi + 1);
+        outlineRow(lbl, "", 0, GROUP_COLS[gi], false, count == 0);
         if (ImGui::BeginDragDropTarget()) {
             if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("EG_OBJ")) {
                 int id = *(const int*)pl->Data;
@@ -2023,133 +2606,200 @@ static void sceneCard(ImVec2 size) {
             }
             ImGui::EndDragDropTarget();
         }
-        if (open) {
-            for (auto& o : g.S.objects) {
-                if (o.group != gi) continue;
-                ImGui::PushID(o.id);
-                std::string label = std::string(o.visible ? "" : "(hidden) ") + o.name + (o.geoError.empty() ? "" : "  (!)");
-                if (ImGui::Selectable(label.c_str(), g.sel.kind == Selection::Obj && g.sel.id == o.id, ImGuiSelectableFlags_AllowOverlap)) g.sel = {Selection::Obj, o.id};
-                if (ImGui::BeginDragDropSource()) {
-                    ImGui::SetDragDropPayload("EG_OBJ", &o.id, sizeof(int));
-                    ImGui::Text("Move %s to another group", o.name.c_str());
-                    ImGui::EndDragDropSource();
-                }
-                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 60 + ImGui::GetCursorPosX() - ImGui::GetCursorPosX());
-                ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - 54);
-                ImGui::TextDisabled("%s", typeLabel(o));
-                int del = -1;
-                if (ImGui::BeginPopupContextItem("ctx")) {
-                    g.sel = {Selection::Obj, o.id};
-                    if (ImGui::MenuItem(o.visible ? "Hide" : "Show")) o.visible = !o.visible;
-                    if (ImGui::BeginMenu("Move to group")) {
-                        for (int k = 0; k < 5; k++) { char b[16]; snprintf(b, sizeof b, "Group %d", k + 1); if (ImGui::MenuItem(b, nullptr, o.group == k)) o.group = k; }
-                        ImGui::EndMenu();
-                    }
-                    if (ImGui::MenuItem("Duplicate", "Ctrl+D")) del = -2;
-                    if (ImGui::MenuItem("Delete", "Del")) del = o.id;
-                    ImGui::EndPopup();
-                }
-                ImGui::PopID();
-                if (del == -2) { duplicateSelected(); break; }
-                if (del >= 0) { g.sel = {Selection::Obj, del}; deleteSelected(); break; }
+        for (auto& o : g.S.objects) {
+            if (o.group != gi) continue;
+            ImGui::PushID(o.id);
+            std::string label = std::string(o.visible ? "" : "(hidden) ") + o.name + (o.geoError.empty() ? "" : "  (!)");
+            if (outlineRow(label.c_str(), typeLabel(o), 1, GROUP_COLS[gi], g.sel.kind == Selection::Obj && g.sel.id == o.id, !o.visible)) g.sel = {Selection::Obj, o.id};
+            if (ImGui::BeginDragDropSource()) {
+                ImGui::SetDragDropPayload("EG_OBJ", &o.id, sizeof(int));
+                ImGui::Text("Move %s to another group", o.name.c_str());
+                ImGui::EndDragDropSource();
             }
-            ImGui::TreePop();
+            int del = -1;
+            if (ImGui::BeginPopupContextItem("ctx")) {
+                g.sel = {Selection::Obj, o.id};
+                if (ImGui::MenuItem(o.visible ? "Hide" : "Show")) o.visible = !o.visible;
+                if (ImGui::BeginMenu("Move to group")) {
+                    for (int k = 0; k < 5; k++) { char b[16]; snprintf(b, sizeof b, "Group %d", k + 1); if (ImGui::MenuItem(b, nullptr, o.group == k)) o.group = k; }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::MenuItem("Duplicate", "Ctrl+D")) del = -2;
+                if (ImGui::MenuItem("Delete", "Del")) del = o.id;
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+            if (del == -2) { duplicateSelected(); break; }
+            if (del >= 0) { g.sel = {Selection::Obj, del}; deleteSelected(); break; }
         }
         ImGui::PopID();
     }
-    ImGui::Spacing();
-    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
-    if (ImGui::TreeNodeEx("Camera & lights", ImGuiTreeNodeFlags_SpanAvailWidth)) {
-        if (ImGui::Selectable("Camera", g.sel.kind == Selection::Camera)) g.sel = {Selection::Camera, 0};
-        for (int i = 0; i < (int)g.S.lights.size(); i++) {
-            ImGui::PushID(300 + i);
-            std::string l = g.S.lights[i].name + (g.S.lights[i].enabled ? "" : " (off)");
-            if (ImGui::Selectable(l.c_str(), g.sel.kind == Selection::Light && g.sel.id == i)) g.sel = {Selection::Light, i};
-            ImGui::PopID();
-        }
-        if (ImGui::Selectable("Look & render", g.sel.kind == Selection::World)) g.sel = {Selection::World, 0};
-        if (g.S.lights.size() < 4 && ImGui::SmallButton("+ Add light")) {
-            Light l; l.name = "Light " + std::to_string(g.S.lights.size() + 1); l.pos.value = vec3(-3, 4, 3); l.intensity.value = 1.5f; l.shadow = false;
-            g.S.lights.push_back(l); g.sel = {Selection::Light, (int)g.S.lights.size() - 1};
-        }
-        ImGui::TreePop();
+    ImGui::PushID("cl");
+    ImGui::PushID("camrow");
+    if (outlineRow("Camera", "", 0, IM_COL32(119, 119, 126, 255), g.sel.kind == Selection::Camera)) g.sel = {Selection::Camera, 0};
+    ImGui::PopID();
+    for (int i = 0; i < (int)g.S.lights.size(); i++) {
+        ImGui::PushID(300 + i);
+        std::string l = g.S.lights[i].name + (g.S.lights[i].enabled ? "" : " (off)");
+        if (outlineRow(l.c_str(), g.S.lights[i].type == 0 ? "Sun" : "Point", 0, IM_COL32(224, 198, 107, 255), g.sel.kind == Selection::Light && g.sel.id == i, !g.S.lights[i].enabled)) g.sel = {Selection::Light, i};
+        ImGui::PopID();
     }
-    ImGui::TextDisabled("Drag objects between groups.");
-    ImGui::EndChild();
+    ImGui::PushID("worldrow");
+    if (outlineRow("Look & render", "", 0, IM_COL32(119, 119, 126, 255), g.sel.kind == Selection::World)) g.sel = {Selection::World, 0};
+    ImGui::PopID();
+    ImGui::PopID();
+    ImGui::PopStyleVar();
+    ImGui::Dummy(ImVec2(1, 6));
+    ImGui::SetCursorPosX(12);
+    if (g.S.lights.size() < 4 && ImGui::SmallButton("+ Add light")) {
+        Light l; l.name = "Light " + std::to_string(g.S.lights.size() + 1); l.pos.value = vec3(-3, 4, 3); l.intensity.value = 1.5f; l.shadow = false;
+        g.S.lights.push_back(l); g.sel = {Selection::Light, (int)g.S.lights.size() - 1};
+    }
+    ImGui::SameLine(0, 10); ImGui::TextDisabled("Drag objects between groups");
     ImGui::EndChild();
 }
-static void editCard(ImVec2 size) {
-    beginCard("edit", size);
-    cardTitle("Edit");
-    ImGui::BeginChild("editBody", ImVec2(0, 0), ImGuiChildFlags_None);
+static void inspectorPanel(ImVec2 size) {
+    beginCard("inspector", size);
+    std::string title = "Nothing selected", sub;
+    if (Object* o = selectedObject()) { title = o->name; sub = std::string(typeLabel(*o)) + " · Group " + std::to_string(o->group + 1); }
+    else if (g.sel.kind == Selection::Camera) title = "Camera";
+    else if (g.sel.kind == Selection::Light && g.sel.id < (int)g.S.lights.size()) { title = g.S.lights[g.sel.id].name; sub = "Light"; }
+    else if (g.sel.kind == Selection::World) { title = "Look & render"; sub = "Scene"; }
+    panelHeader(title.c_str(), sub.c_str());
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12, 8));
+    ImGui::BeginChild("editBody", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    ImGui::PopStyleVar();
     if (Object* o = selectedObject()) objectProps(*o);
     else if (g.sel.kind == Selection::Camera) cameraProps();
     else if (g.sel.kind == Selection::Light && g.sel.id < (int)g.S.lights.size()) lightProps(g.S.lights[g.sel.id]);
     else if (g.sel.kind == Selection::World) worldProps();
-    else ImGui::TextDisabled("Select something in the Scene panel\nor click it in the viewport.");
+    else ImGui::TextDisabled("Select something in the Scene list\nor click it in the viewport.");
     ImGui::EndChild();
     ImGui::EndChild();
+}
+// Thin labelled preview slider used in the strip under the viewport
+static void stripSlider(const char* id, const char* label, float* v, bool enabled, float w) {
+    ImGui::BeginGroup();
+    ImGui::BeginDisabled(!enabled);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    char val[16]; snprintf(val, sizeof val, "%.0f%%", *v);
+    dl->AddText(p, enabled ? IM_COL32(168, 168, 173, 255) : IM_COL32(100, 100, 106, 255), label);
+    ImVec2 vs = ImGui::CalcTextSize(val);
+    dl->AddText(ImVec2(p.x + w - vs.x, p.y), enabled ? ST_TEXT : IM_COL32(100, 100, 106, 255), val);
+    float y = p.y + ImGui::GetTextLineHeight() + 8;
+    dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + w, y + 3), IM_COL32(51, 51, 56, 255), 2);
+    if (enabled) dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + w * std::clamp(*v / 100.f, 0.f, 1.f), y + 3), GOLD32, 2);
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y));
+    ImGui::InvisibleButton(id, ImVec2(w, ImGui::GetTextLineHeight() + 14));
+    if (enabled && ImGui::IsItemActive()) *v = std::clamp((ImGui::GetIO().MousePos.x - p.x) / w * 100.f, 0.f, 100.f);
+    if (enabled && ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    ImGui::EndDisabled();
+    ImGui::EndGroup();
 }
 static void setupLayout() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos); ImGui::SetNextWindowSize(vp->WorkSize);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 6));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
     ImGui::Begin("##setup", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleVar(2);
-    // toolbar
+    ImDrawList* wdl = ImGui::GetWindowDrawList();
+    ImVec2 o = ImGui::GetCursorScreenPos();
+    float W = ImGui::GetContentRegionAvail().x, H = ImGui::GetContentRegionAvail().y;
+    const float barH = 0, toolH = 44;
+    // ---- toolbar (44px)
+    float ty = o.y + barH;
+    wdl->AddRectFilled(ImVec2(o.x, ty), ImVec2(o.x + W, ty + toolH), ST_PANEL);
+    wdl->AddLine(ImVec2(o.x, ty + toolH - .5f), ImVec2(o.x + W, ty + toolH - .5f), ST_LINE);
+    ImGui::SetCursorScreenPos(ImVec2(o.x + 10, ty + 7));
     Object* so = selectedObject();
-    if (toolButton("Import", 0, false, "Import a model, logo, font or HDRI")) {
+    gizmoSegment();
+    vDivider();
+    if (toolButton("Text", 1, g_presetTab == 4, "Add 3D text (title looks are in the Titles tab)")) { addText(); g_presetTab = 4; }
+    ImGui::SameLine(0, 2); if (toolButton("Logo", 2, false, "Extrude a PNG or SVG logo")) addLogoDialog();
+    ImGui::SameLine(0, 2); if (toolButton("Model", 3, false, "Import a 3D model")) addModelDialog();
+    ImGui::SameLine(0, 2); if (toolButton("Shapes", 4, g_presetTab == 3 && g_browserTab == 1, "Basic shapes")) { g_presetTab = 3; g_browserTab = 1; }
+    ImGui::SameLine(0, 2); if (toolButton("Icons", 5, g_presetTab == 3 && g_browserTab == 0, "3D icon pack")) { g_presetTab = 3; g_browserTab = 0; }
+    ImGui::SameLine(0, 2); if (toolButton("Import...", 0, false, "Import a model, logo, font or HDRI")) {
         std::string pth = openFileDialog("Import", "Everything supported|*.glb;*.gltf;*.fbx;*.obj;*.png;*.svg;*.jpg;*.jpeg;*.ttf;*.otf;*.hdr|All files|*.*", g.hwnd);
         if (!pth.empty()) importFile(pth);
     }
-    ImGui::SameLine(0, 4); if (toolButton("Text", 1, so && so->type == ObjType::Text, "Add 3D text")) addText();
-    ImGui::SameLine(0, 4); if (toolButton("Logo", 2, so && so->type == ObjType::Logo, "Extrude a PNG or SVG logo")) addLogoDialog();
-    ImGui::SameLine(0, 4); if (toolButton("Model", 3, so && so->type == ObjType::Model, "Import a 3D model")) addModelDialog();
-    ImGui::SameLine(0, 4); if (toolButton("Shapes", 4, false, "Basic shapes")) g_browserTab = 1;
-    ImGui::SameLine(0, 4); if (toolButton("Icons", 5, false, "3D icon pack")) g_browserTab = 0;
-    ImGui::SameLine(0, 14); if (toolButton("Lighting", 6, g_presetTab == 2, "Reflections & lighting presets")) g_presetTab = 2;
-    ImGui::SameLine(0, 4); if (toolButton("Lights", 7, g.sel.kind == Selection::Light, "Edit lights")) g.sel = {Selection::Light, 0};
-    ImGui::SameLine(0, 4); if (toolButton("Render", 8, g.sel.kind == Selection::World, "Look & render settings")) g.sel = {Selection::World, 0};
-    float right = ImGui::GetWindowContentRegionMax().x;
-    ImGui::SameLine(right - 232);
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
-    if (ImGui::Button("Cancel", ImVec2(100, 34))) { g.wantClose = true; }
-    ImGui::SameLine(0, 8);
-    if (goldButton("OK", ImVec2(120, 34))) setupFinish(true);
-    // columns
-    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6);
-    ImVec2 avail = ImGui::GetContentRegionAvail();
-    float gap = 8, leftW = std::max(260.f, avail.x * 0.2f), rightW = std::max(300.f, avail.x * 0.23f);
-    float midW = avail.x - leftW - rightW - gap * 2;
-    ImGui::BeginGroup();
-    presetsCard(ImVec2(leftW, (avail.y - gap) * 0.55f));
-    browserCard(ImVec2(leftW, avail.y - (avail.y - gap) * 0.55f - gap));
-    ImGui::EndGroup();
-    ImGui::SameLine(0, gap);
-    ImGui::BeginGroup();
-    float stripH = 46;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("viewcard", ImVec2(midW, avail.y - stripH - gap), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    vDivider();
+    if (toolButton("Lighting", 6, g_presetTab == 2, "Reflections & lighting presets")) g_presetTab = 2;
+    ImGui::SameLine(0, 2); if (toolButton("Lights", 7, g.sel.kind == Selection::Light, "Edit lights")) g.sel = {Selection::Light, 0};
+    ImGui::SameLine(0, 2); if (toolButton("Render", 8, g.sel.kind == Selection::World, "Look & render settings")) g.sel = {Selection::World, 0};
+    (void)so;
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14, 5));
+    if (g.setupMode) {
+        ImGui::SetCursorScreenPos(ImVec2(o.x + W - 10 - 76 - 8 - 92, ty + 8));
+        if (ImGui::Button("Cancel", ImVec2(92, 28))) { g.wantClose = true; }
+        ImGui::SameLine(0, 8);
+        if (goldButton("OK", ImVec2(76, 28))) setupFinish(true);
+    } else {
+        ImGui::SetCursorScreenPos(ImVec2(o.x + W - 10 - 140, ty + 8));
+        if (goldButton("Export video", ImVec2(140, 28))) g.exportDialog = true;
+    }
     ImGui::PopStyleVar();
+    // ---- body: left panel | viewport | inspector, separated by hairlines
+    float by = ty + toolH, bh = o.y + H - by;
+    float leftW = std::clamp(W * 0.19f, 250.f, 300.f), rightW = std::clamp(W * 0.22f, 300.f, 360.f);
+    float midW = W - leftW - rightW - 2;
+    // left
+    ImGui::SetCursorScreenPos(ImVec2(o.x, by));
+    beginCard("left", ImVec2(leftW, bh));
+    panelHeader("Scene");
+    {
+        float outlineH = std::min(bh * 0.40f, 34.f + 24.f * (8 + (float)g.S.objects.size()));
+        ImGui::BeginChild("outlineWrap", ImVec2(0, outlineH), ImGuiChildFlags_None);
+        sceneOutline();
+        ImGui::EndChild();
+        ImVec2 lp = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(lp.x, lp.y + .5f), ImVec2(lp.x + leftW, lp.y + .5f), ST_LINE);
+        static const char* tabs[] = {"Titles", "Materials", "Bevels", "Lighting", "Models"};
+        static const int tabIds[] = {4, 0, 1, 2, 3};
+        int disp = 0; for (int i = 0; i < 5; i++) if (tabIds[i] == g_presetTab) disp = i;
+        if (pillTabs(tabs, 5, disp)) g_presetTab = tabIds[disp];
+        libraryBody();
+    }
+    ImGui::EndChild();
+    wdl->AddLine(ImVec2(o.x + leftW + .5f, by), ImVec2(o.x + leftW + .5f, o.y + H), ST_LINE);
+    // centre
+    float stripH = g.setupMode ? 64.f : std::clamp(bh * 0.30f, 200.f, 320.f);
+    ImGui::SetCursorScreenPos(ImVec2(o.x + leftW + 1, by));
+    beginCard("viewcard", ImVec2(midW, bh - stripH), ST_VIEW);
     viewportBody();
     ImGui::EndChild();
-    beginCard("strip", ImVec2(midW, stripH));
-    bool anyLetters = false; for (auto& o : g.S.objects) anyLetters |= o.letters.enabled;
-    ImGui::AlignTextToFramePadding(); ImGui::TextDisabled("Letters Built"); ImGui::SameLine();
-    ImGui::BeginDisabled(!anyLetters);
-    ImGui::SetNextItemWidth(std::min(360.f, midW * 0.4f));
-    ImGui::SliderFloat("##lb", &g.previewLetters, 0, 100, "%.0f%%");
-    ImGui::EndDisabled();
-    ImGui::SameLine(0, 20);
-    ImGui::TextDisabled(anyLetters ? "Preview only - keyframe it in Effect Controls" : "Turn on letter animation in a text's Animate tab");
+    ImGui::SetCursorScreenPos(ImVec2(o.x + leftW + 1, by + bh - stripH));
+    beginCard("strip", ImVec2(midW, stripH), IM_COL32(29, 29, 31, 255));
+    if (!g.setupMode) {
+        ImVec2 sp = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(sp.x, sp.y + .5f), ImVec2(sp.x + midW, sp.y + .5f), ST_LINE);
+        ImGui::SetCursorScreenPos(ImVec2(sp.x + 8, sp.y + 6));
+        ImGui::BeginChild("tl", ImVec2(midW - 12, stripH - 8), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+        timelineBody();
+        ImGui::EndChild();
+    } else {
+        ImDrawList* sdl = ImGui::GetWindowDrawList();
+        ImVec2 sp = ImGui::GetCursorScreenPos();
+        sdl->AddLine(ImVec2(sp.x, sp.y + .5f), ImVec2(sp.x + midW, sp.y + .5f), ST_LINE);
+        bool anyLetters = false, anyShatter = false, anyRep = false;
+        for (auto& ob : g.S.objects) { anyLetters |= ob.letters.enabled; anyShatter |= ob.shatter.enabled; anyRep |= ob.rep.enabled; }
+        float pad = 20, gap = 24, cw = (midW - pad * 2 - gap * 2) / 3;
+        ImGui::SetCursorScreenPos(ImVec2(sp.x + pad, sp.y + 14));
+        stripSlider("##lb", "Letters built", &g.previewLetters, anyLetters, cw);
+        ImGui::SameLine(0, gap); stripSlider("##sh", "Shatter", &g.previewShatter, anyShatter, cw);
+        ImGui::SameLine(0, gap); stripSlider("##rb", "Copies built", &g.previewRepBuild, anyRep, cw);
+        ImGui::SetCursorScreenPos(ImVec2(sp.x + pad, sp.y + 46));
+        ImGui::PushFont(nullptr, 11.5f);
+        ImGui::TextColored(ImVec4(0.42f, 0.42f, 0.45f, 1), "Preview only. Keyframe these in Effect Controls.");
+        ImGui::PopFont();
+    }
     ImGui::EndChild();
-    ImGui::EndGroup();
-    ImGui::SameLine(0, gap);
-    ImGui::BeginGroup();
-    sceneCard(ImVec2(rightW, (avail.y - gap) * 0.4f));
-    editCard(ImVec2(rightW, avail.y - (avail.y - gap) * 0.4f - gap));
-    ImGui::EndGroup();
+    wdl->AddLine(ImVec2(o.x + leftW + 1 + midW + .5f, by), ImVec2(o.x + leftW + 1 + midW + .5f, o.y + H), ST_LINE);
+    // right
+    ImGui::SetCursorScreenPos(ImVec2(o.x + leftW + 2 + midW, by));
+    inspectorPanel(ImVec2(rightW, bh));
     ImGui::End();
 }
 
@@ -2195,7 +2845,8 @@ int main(int, char**) {
     // UTF-8 command line
     int argc = 0; LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::string> args; for (int i = 0; i < argc; i++) args.push_back(narrow(wargv[i]));
-    bool headless = args.size() >= 4 && args[1] == "--render";
+    bool presetRender = args.size() >= 4 && args[1] == "--preset-render";  // dev tool: render every title preset (website shots)
+    bool headless = (args.size() >= 4 && args[1] == "--render") || presetRender;
     std::string uiShot; int uiShotFrames = 0;
     for (size_t i = 1; i + 1 < args.size(); i++) if (args[i] == "--screenshot") { uiShot = args[i + 1]; uiShotFrames = 30; }
     std::string setupIn, refPath; int compW = 1920, compH = 1080; float compFps = 25.f; unsigned long long parentHwnd = 0;
@@ -2237,6 +2888,37 @@ int main(int, char**) {
         MessageBoxW(nullptr, m.c_str(), L"Element Genie", MB_ICONERROR);
         if (headless) { fprintf(stderr, "%s\n", err.c_str()); return 1; }
     }
+    if (presetRender) {
+        g_titles.clear(); g_packs.clear(); loadPackFile(args[2]);
+        float built = args.size() >= 5 ? (float)atof(args[4].c_str()) : 100.f;
+        const int W = 1600, H = 900;
+        int idx = 0;
+        for (auto& t : g_titles) {
+            Scene s; sceneDefaults(s);
+            s.reflection.enabled = true; s.reflection.strength = 0.3f; s.catcher.enabled = true; s.catcher.opacity = 0.5f; s.quality.ao = true;
+            Object o; o.id = 1; o.type = ObjType::Text; o.font = "builtin:Inter Black"; o.text = t.j.value("text", "TITLE");
+            applyTitleLook(s, o, t.j, true);
+            if (!g.R.ensureGeometry(o) || !o.geo) continue;
+            vec3 mn = o.geo->bmin, mx = o.geo->bmax, ctr = (mn + mx) * .5f;
+            float fov = 30.f, aspect = W / (float)H, halfW = (mx.x - mn.x) * .5f, halfH = (mx.y - mn.y) * .5f;
+            float d = std::max(halfW / (std::tan(glm::radians(fov) * .5f) * aspect), halfH / std::tan(glm::radians(fov) * .5f)) * 1.45f + (mx.z - mn.z);
+            s.cam.pos.value = ctr + vec3(-d * 0.18f, d * 0.16f, d); s.cam.target.value = ctr; s.cam.fov.value = fov;
+            s.objects.push_back(o);
+            setLetterFrames(s, built);
+            RenderTarget rt; rt.ensure(W, H, 8);
+            ViewOptions vo; vo.aspect = aspect; g.R.render(s, 0.f, rt, vo);
+            std::vector<uint8_t> px((size_t)W * H * 4);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, rt.outFbo); glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            rt.release();
+            char fn[64]; snprintf(fn, sizeof fn, "preset_%02d.rgba", idx++);
+            FILE* f = _wfopen(widen(args[3] + "\\" + fn).c_str(), L"wb");
+            if (f) { int hdr[2] = {W, H}; fwrite(hdr, 4, 2, f); fwrite(px.data(), 1, px.size(), f); fclose(f); }
+            fprintf(stderr, "%s -> %s\n", t.name.c_str(), fn);
+        }
+        glfwTerminate();
+        return 0;
+    }
     if (headless) {
         int a = -1, b = -1;
         for (size_t i = 4; i + 2 < args.size() + 1; i++) if (args[i] == "--frames" && i + 2 < args.size()) { a = atoi(args[i + 1].c_str()); b = atoi(args[i + 2].c_str()); }
@@ -2250,6 +2932,7 @@ int main(int, char**) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
+    io.ConfigDebugHighlightIdConflicts = getenv("EG_DEBUG") != nullptr;  // never show ImGui debug popups to users
     io.ConfigWindowsMoveFromTitleBarOnly = true;
     ImFontConfig fc; fc.FontDataOwnedByAtlas = false;
     g.fUI = io.Fonts->AddFontFromMemoryTTF((void*)g_font_ui, (int)g_font_ui_size, 15.f, &fc);
@@ -2302,15 +2985,8 @@ int main(int, char**) {
         }
         g.frame = std::clamp(g.frame, 0.f, (float)std::max(0, g.S.comp.frames - 1));
         menuBar();
-        if (g.setupMode) setupLayout();
-        else {
-        ImGuiID dock = ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_None);
-        if (!layoutDone) { buildLayout(dock); layoutDone = true; }
-        scenePanel();
-        viewportPanel();
-        propertiesPanel();
-        timelinePanel();
-        }
+        setupLayout();  // one Studio layout for Scene Setup and the standalone app (standalone adds the timeline)
+        (void)layoutDone;
         if (!g.setupMode) exportDialog();
         popups();
         shortcuts();

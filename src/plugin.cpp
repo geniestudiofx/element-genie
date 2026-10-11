@@ -7,6 +7,7 @@
 #include "AE_Macros.h"
 #include "Param_Utils.h"
 #include "AE_GeneralPlug.h"
+#include "PrSDKAESupport.h"
 #include <windows.h>
 #include <glad/gl.h>
 #include <string>
@@ -31,7 +32,7 @@ std::string narrow(const std::wstring& w);
 bool readFileBytes(const std::string& path, std::vector<uint8_t>& out);
 
 #define EG_MAJOR 1
-#define EG_MINOR 6
+#define EG_MINOR 0
 #define EG_BUG 0
 #define EG_STAGE PF_Stage_RELEASE
 #define EG_BUILD 1
@@ -46,10 +47,15 @@ enum {
     P_ANIM = P_CAM + 9, // topic, letters, envrot, light, glow, end
     P_REND = P_ANIM + 6, // topic, composite, motion blur, shutter, quality, end
     P_REAL = P_REND + 6, // topic + 12 + end
-    P_LET = P_REAL + 14,  // topic, rx, ry, rz, px, py, pz, scale, spread, wave offset, randomness, apply to, end
-    P_DEF = P_LET + 13,   // topic, twist, axis, offset, apply to, end
-    P_AE = P_DEF + 6,     // topic, use comp camera, world scale, end
-    P_NUM = P_AE + 4
+    P_FX = P_REAL + 14,  // topic, shatter, deform, noise evo, rep spread, rep rotate, rep build, end
+    P_LENS = P_FX + 8,   // topic, dof mode, focus offset, blur, fog mode, fog amount, end
+    P_OUT = P_LENS + 7,  // topic, output pass, end
+    P_LET = P_OUT + 3,   // topic, rx, ry, rz, px, py, pz, scale, spread, wave offset, randomness, apply to, end
+    P_AE = P_LET + 13,   // topic, use comp camera, world scale, use comp lights, keep scene lights, end
+    P_AUTO = P_AE + 6,   // topic, build in, build in time, build out, build out time, end
+    P_DEF = P_AUTO + 6,  // topic, twist, bend, taper, wobble, axis, apply to, end
+    P_LOOK = P_DEF + 8,  // topic, light rotate, self glow, extrusion depth, end
+    P_NUM = P_LOOK + 5
 };
 enum { G_TOPIC = 0, G_PX, G_PY, G_PZ, G_RX, G_RY, G_RZ, G_SCALE, G_OPACITY, G_END };
 
@@ -59,7 +65,7 @@ static const uint32_t ARB_MAGIC = 0x45473344;  // 'EG3D'
 static std::string defaultSceneJson() {
     Scene s; sceneDefaults(s);
     Object o; o.id = s.nextId++; o.type = ObjType::Text; o.name = "Text"; o.text = "TEXT"; o.font = "builtin:Inter Black";
-    o.mat.preset = "Gold"; o.mat.color = glm::vec3(1.0f, 0.77f, 0.34f); o.mat.metallic = 1; o.mat.roughness = 0.16f; o.mat2 = o.mat;
+    o.mat.preset = "Chrome"; o.mat.color = glm::vec3(0.96f, 0.96f, 0.97f); o.mat.metallic = 1; o.mat.roughness = 0.06f; o.mat2 = o.mat;
     s.objects.push_back(o);
     return sceneToJson(s);
 }
@@ -346,10 +352,14 @@ static PF_Err About(PF_InData* in_data, PF_OutData* out_data) {
     return PF_Err_NONE;
 }
 
-static PF_Err GlobalSetup(PF_InData*, PF_OutData* out_data) {
+static PF_Err GlobalSetup(PF_InData* in_data, PF_OutData* out_data) {
     out_data->my_version = PF_VERSION(EG_MAJOR, EG_MINOR, EG_BUG, EG_STAGE, EG_BUILD);
-    out_data->out_flags = PF_OutFlag_I_DO_DIALOG | PF_OutFlag_CUSTOM_UI;
-    out_data->out_flags2 = PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG | PF_OutFlag2_SUPPORTS_THREADED_RENDERING | PF_OutFlag2_I_USE_3D_CAMERA;
+    // NON_PARAM_VARY: the picture changes over time even without keyframes (Auto Animate, wobble, replicator...),
+    // so Premiere / After Effects must not reuse one rendered frame across the clip
+    out_data->out_flags = PF_OutFlag_I_DO_DIALOG | PF_OutFlag_NON_PARAM_VARY;
+    // After Effects needs CUSTOM_UI to accept the hidden Scene parameter; Premiere works as before without it.
+    if (in_data && in_data->appl_id == 'FXTC') out_data->out_flags |= PF_OutFlag_CUSTOM_UI;
+    out_data->out_flags2 = PF_OutFlag2_PARAM_GROUP_START_COLLAPSED_FLAG | PF_OutFlag2_SUPPORTS_THREADED_RENDERING | PF_OutFlag2_I_USE_3D_CAMERA | PF_OutFlag2_I_USE_3D_LIGHTS;
     return PF_Err_NONE;
 }
 
@@ -413,6 +423,24 @@ static PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_FLOAT_SLIDERX("Reflection Strength", 0, 100, 0, 100, 35, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
     PF_ADD_FLOAT_SLIDERX("Reflection Fade", 1, 1000, 5, 300, 80, 1, 0, 0, id++);
     AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    PF_ADD_TOPICX("Effects", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Shatter", 0, 100, 0, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Deform Amount", 0, 1000, 0, 200, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Noise Evolution", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Replicator Spread", 0, 10000, 0, 300, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Replicator Rotate", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Replicator Build", 0, 100, 0, 100, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    PF_ADD_TOPICX("Lens & Fog", PF_ParamFlag_START_COLLAPSED, id++);
+    PF_ADD_POPUPX("Depth of Field", 3, 1, "As in Scene Setup|On|Off", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Focus Offset", -1000, 1000, -10, 10, 0, 2, 0, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Blur Amount", 0, 1000, 0, 300, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_POPUPX("Fog", 3, 1, "As in Scene Setup|On|Off", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Fog Amount", 0, 100, 0, 100, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    PF_ADD_TOPICX("Output", PF_ParamFlag_START_COLLAPSED, id++);
+    PF_ADD_POPUPX("Render Pass", 5, 1, "Final|Matte (alpha)|Depth|Normals|Ambient Occlusion", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
     // per letter: turn / move / scale every letter around its own centre (text only)
     PF_ADD_TOPICX("Per Letter", PF_ParamFlag_START_COLLAPSED, id++);
     AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Letter Rotation X", 0, id++);
@@ -427,17 +455,34 @@ static PF_Err ParamsSetup(PF_InData* in_data, PF_OutData* out_data) {
     PF_ADD_FLOAT_SLIDERX("Randomness", 0, 100, 0, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
     PF_ADD_POPUPX("Letters In", 6, 1, "All groups|Group 1|Group 2|Group 3|Group 4|Group 5", 0, id++);
     AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
-    // deform
-    PF_ADD_TOPICX("Deform", PF_ParamFlag_START_COLLAPSED, id++);
-    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Twist", 0, id++);
-    PF_ADD_POPUPX("Twist Axis", 3, 1, "X (left to right)|Y (bottom to top)|Z (front to back)", 0, id++);
-    PF_ADD_FLOAT_SLIDERX("Twist Offset", -200, 200, -100, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
-    PF_ADD_POPUPX("Twist Applies To", 6, 1, "All groups|Group 1|Group 2|Group 3|Group 4|Group 5", 0, id++);
-    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
     // After Effects: follow the comp's 3D camera
     PF_ADD_TOPICX("After Effects 3D", PF_ParamFlag_START_COLLAPSED, id++);
     AEFX_CLR_STRUCT(def); PF_ADD_CHECKBOXX("Use Comp Camera", TRUE, 0, id++);
     PF_ADD_FLOAT_SLIDERX("World Scale", 1, 10000, 10, 400, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_CHECKBOXX("Use Comp Lights", TRUE, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_CHECKBOXX("Keep Scene Setup Lights", FALSE, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    // Auto Animate: letter animations from Scene Setup play by themselves at the start / end of the clip
+    PF_ADD_TOPICX("Auto Animate", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_CHECKBOXX("Build In at Start", TRUE, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Build In Time (sec)", 0.1, 30, 0.1, 6, 1.5, 2, PF_ValueDisplayFlag_NONE, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_CHECKBOXX("Build Out at End", FALSE, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Build Out Time (sec)", 0.1, 30, 0.1, 6, 1.0, 2, PF_ValueDisplayFlag_NONE, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    // Twist & Bend: works on its own, no Scene Setup needed (adds to any Deform set in Scene Setup)
+    PF_ADD_TOPICX("Twist & Bend", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Twist", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Bend", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Taper", -100, 100, -100, 100, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Wobble", 0, 500, 0, 200, 0, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_POPUPX("Twist Along", 3, 1, "Width (left to right)|Height (bottom to top)|Depth (front to back)", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_POPUPX("Apply To", 6, 1, "All groups|Group 1|Group 2|Group 3|Group 4|Group 5", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
+    // Look: animatable lighting / material / depth
+    PF_ADD_TOPICX("Look", 0, id++);
+    AEFX_CLR_STRUCT(def); PF_ADD_ANGLE("Light Rotate", 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Self Glow", 0, 1000, 0, 300, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
+    PF_ADD_FLOAT_SLIDERX("Extrusion Depth", 0, 1000, 0, 300, 100, 1, PF_ValueDisplayFlag_PERCENT, 0, id++);
     AEFX_CLR_STRUCT(def); PF_END_TOPIC(id++);
     out_data->num_params = P_NUM;
     return PF_Err_NONE;
@@ -460,6 +505,15 @@ static FxParams readFx(PF_ParamDef* params[]) {
     p.roll = (float)FIX_2_FLOAT(params[P_CAM + 6]->u.ad.value);
     p.fovOff = (float)params[P_CAM + 7]->u.fs_d.value;
     p.letters = (float)params[P_ANIM + 1]->u.fs_d.value;
+    p.twist = (float)FIX_2_FLOAT(params[P_DEF + 1]->u.ad.value);
+    p.bend = (float)FIX_2_FLOAT(params[P_DEF + 2]->u.ad.value);
+    p.taper = (float)params[P_DEF + 3]->u.fs_d.value;
+    p.wobble = (float)params[P_DEF + 4]->u.fs_d.value;
+    p.defAxis = (int)params[P_DEF + 5]->u.pd.value - 1;
+    p.defTarget = (int)params[P_DEF + 6]->u.pd.value - 1;
+    p.lightRot = (float)FIX_2_FLOAT(params[P_LOOK + 1]->u.ad.value);
+    p.selfGlow = (float)params[P_LOOK + 2]->u.fs_d.value;
+    p.depthPct = (float)params[P_LOOK + 3]->u.fs_d.value;
     p.envRot = (float)FIX_2_FLOAT(params[P_ANIM + 2]->u.ad.value);
     p.lightPct = (float)params[P_ANIM + 3]->u.fs_d.value;
     p.glowPct = (float)params[P_ANIM + 4]->u.fs_d.value;
@@ -478,6 +532,18 @@ static FxParams readFx(PF_ParamDef* params[]) {
     p.reflection = params[P_REAL + 10]->u.bd.value != 0;
     p.reflStrength = (float)params[P_REAL + 11]->u.fs_d.value;
     p.reflFade = (float)params[P_REAL + 12]->u.fs_d.value;
+    p.shatter = (float)params[P_FX + 1]->u.fs_d.value;
+    p.deform = (float)params[P_FX + 2]->u.fs_d.value;
+    p.noiseEvo = (float)FIX_2_FLOAT(params[P_FX + 3]->u.ad.value);
+    p.repSpread = (float)params[P_FX + 4]->u.fs_d.value;
+    p.repRotate = (float)FIX_2_FLOAT(params[P_FX + 5]->u.ad.value);
+    p.repBuild = (float)params[P_FX + 6]->u.fs_d.value;
+    p.dofMode = std::clamp((int)params[P_LENS + 1]->u.pd.value - 1, 0, 2);
+    p.focusOffset = (float)params[P_LENS + 2]->u.fs_d.value;
+    p.blur = (float)params[P_LENS + 3]->u.fs_d.value;
+    p.fogMode = std::clamp((int)params[P_LENS + 4]->u.pd.value - 1, 0, 2);
+    p.fog = (float)params[P_LENS + 5]->u.fs_d.value;
+    p.pass = std::clamp((int)params[P_OUT + 1]->u.pd.value - 1, 0, 4);
     p.lRot = glm::vec3((float)FIX_2_FLOAT(params[P_LET + 1]->u.ad.value), (float)FIX_2_FLOAT(params[P_LET + 2]->u.ad.value), (float)FIX_2_FLOAT(params[P_LET + 3]->u.ad.value));
     p.lPos = glm::vec3((float)params[P_LET + 4]->u.fs_d.value, (float)params[P_LET + 5]->u.fs_d.value, (float)params[P_LET + 6]->u.fs_d.value);
     p.lScale = (float)params[P_LET + 7]->u.fs_d.value;
@@ -485,10 +551,7 @@ static FxParams readFx(PF_ParamDef* params[]) {
     p.lPhase = (float)FIX_2_FLOAT(params[P_LET + 9]->u.ad.value);
     p.lRandom = (float)params[P_LET + 10]->u.fs_d.value;
     p.lTarget = std::clamp((int)params[P_LET + 11]->u.pd.value - 1, 0, 5);
-    p.twist = (float)FIX_2_FLOAT(params[P_DEF + 1]->u.ad.value);
-    p.twistAxis = std::clamp((int)params[P_DEF + 2]->u.pd.value - 1, 0, 2);
-    p.twistOffset = (float)params[P_DEF + 3]->u.fs_d.value;
-    p.twistTarget = std::clamp((int)params[P_DEF + 4]->u.pd.value - 1, 0, 5);
+    if (p.pass > 0) p.composite = false;  // passes are for compositing: no clip underneath
     return p;
 }
 
@@ -529,6 +592,18 @@ static bool readAECamera(PF_InData* in_data, float worldScalePct, FxParams& fx) 
                 fx.aeUp = glm::vec3((float)-Y.x, (float)Y.y, (float)Y.z);
                 double zv = zoom.one_d > 1 ? zoom.one_d : 1;
                 fx.aeFov = (float)glm::degrees(2.0 * std::atan(H / 2.0 / zv));
+                // camera depth of field (Camera Options > Depth of Field)
+                AEGP_StreamVal dof, fd, ap, bl; AEFX_CLR_STRUCT(dof); AEFX_CLR_STRUCT(fd); AEFX_CLR_STRUCT(ap); AEFX_CLR_STRUCT(bl);
+                fx.aeDof = false;
+                if (!ss->AEGP_GetLayerStreamValue(cam, AEGP_LayerStream_DEPTH_OF_FIELD, AEGP_LTimeMode_CompTime, &t, FALSE, &dof, nullptr) && dof.one_d > 0.5 &&
+                    !ss->AEGP_GetLayerStreamValue(cam, AEGP_LayerStream_FOCUS_DISTANCE, AEGP_LTimeMode_CompTime, &t, FALSE, &fd, nullptr)) {
+                    double apPx = 25, blur = 100;
+                    if (!ss->AEGP_GetLayerStreamValue(cam, AEGP_LayerStream_APERTURE, AEGP_LTimeMode_CompTime, &t, FALSE, &ap, nullptr)) apPx = ap.one_d;
+                    if (!ss->AEGP_GetLayerStreamValue(cam, AEGP_LayerStream_BLUR_LEVEL, AEGP_LTimeMode_CompTime, &t, FALSE, &bl, nullptr)) blur = bl.one_d;
+                    fx.aeDof = true;
+                    fx.aeFocus = (float)(fd.one_d / u);
+                    fx.aeAperture = (float)std::clamp(apPx / (H * 0.05) * blur / 100.0 * 0.5, 0.0, 1.0);
+                }
                 fx.aeCam = true; ok = true;
             }
         }
@@ -539,6 +614,100 @@ static bool readAECamera(PF_InData* in_data, float worldScalePct, FxParams& fx) 
     if (ls) sp->ReleaseSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5);
     sp->ReleaseSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
     return ok;
+}
+
+// After Effects: read the comp's light layers (parallel, spot, point, ambient) into scene units.
+static void readAELights(PF_InData* in_data, float worldScalePct, FxParams& fx) {
+    fx.aeLightN = 0;
+    if (in_data->appl_id != 'FXTC' || !in_data->pica_basicP || !in_data->effect_ref) return;
+    SPBasicSuite* sp = in_data->pica_basicP;
+    const AEGP_PFInterfaceSuite1* pfi = nullptr; const AEGP_LayerSuite5* ls = nullptr; const AEGP_StreamSuite2* ss = nullptr;
+    const AEGP_CompSuite4* cs = nullptr; const AEGP_ItemSuite6* is = nullptr; const AEGP_LightSuite2* lt = nullptr;
+    if (sp->AcquireSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1, (const void**)&pfi) || !pfi) return;
+    sp->AcquireSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5, (const void**)&ls);
+    sp->AcquireSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion2, (const void**)&ss);
+    sp->AcquireSuite(kAEGPCompSuite, kAEGPCompSuiteVersion4, (const void**)&cs);
+    sp->AcquireSuite(kAEGPItemSuite, kAEGPItemSuiteVersion6, (const void**)&is);
+    sp->AcquireSuite(kAEGPLightSuite, kAEGPLightSuiteVersion2, (const void**)&lt);
+    AEGP_LayerH me = nullptr; AEGP_CompH comp = nullptr; A_Time t = {0, 1};
+    if (ls && ss && cs && is && lt && !pfi->AEGP_GetEffectLayer(in_data->effect_ref, &me) && me &&
+        !ls->AEGP_GetLayerParentComp(me, &comp) && comp &&
+        !pfi->AEGP_ConvertEffectToCompTime(in_data->effect_ref, in_data->current_time, in_data->time_scale, &t)) {
+        double W = in_data->width, H = in_data->height;
+        AEGP_ItemH item = nullptr; A_long cw = 0, ch = 0;
+        if (!cs->AEGP_GetItemFromComp(comp, &item) && item && !is->AEGP_GetItemDimensions(item, &cw, &ch) && cw > 0 && ch > 0) { W = cw; H = ch; }
+        double u = H / 4.0 * 100.0 / std::max(1.0, (double)worldScalePct);
+        A_long n = 0; ls->AEGP_GetCompNumLayers(comp, &n);
+        for (A_long i = 0; i < n && fx.aeLightN < FxParams::MAX_AE_LIGHTS; i++) {
+            AEGP_LayerH L = nullptr; AEGP_ObjectType ot = AEGP_ObjectType_NONE; A_Boolean on = FALSE;
+            if (ls->AEGP_GetCompLayerByIndex(comp, i, &L) || !L) continue;
+            if (ls->AEGP_GetLayerObjectType(L, &ot) || ot != AEGP_ObjectType_LIGHT) continue;
+            if (ls->AEGP_IsVideoActive(L, AEGP_LTimeMode_CompTime, &t, &on) || !on) continue;
+            AEGP_LightType ty = AEGP_LightType_POINT; lt->AEGP_GetLightType(L, &ty);
+            AEGP_StreamVal iv, cv, sv; AEFX_CLR_STRUCT(iv); AEFX_CLR_STRUCT(cv); AEFX_CLR_STRUCT(sv);
+            double inten = 100; glm::vec3 col(1);
+            if (!ss->AEGP_GetLayerStreamValue(L, AEGP_LayerStream_INTENSITY, AEGP_LTimeMode_CompTime, &t, FALSE, &iv, nullptr)) inten = iv.one_d;
+            if (!ss->AEGP_GetLayerStreamValue(L, AEGP_LayerStream_COLOR, AEGP_LTimeMode_CompTime, &t, FALSE, &cv, nullptr))
+                col = glm::vec3((float)cv.color.redF, (float)cv.color.greenF, (float)cv.color.blueF);
+            bool shadow = false;
+            if (ty != AEGP_LightType_AMBIENT && !ss->AEGP_GetLayerStreamValue(L, AEGP_LayerStream_CASTS_SHADOWS, AEGP_LTimeMode_CompTime, &t, FALSE, &sv, nullptr))
+                shadow = sv.one_d > 0.5;
+            A_Matrix4 m;
+            if (ls->AEGP_GetLayerToWorldXform(L, &t, &m)) continue;
+            glm::dvec3 Z(m.mat[2][0], m.mat[2][1], m.mat[2][2]); double zl = glm::length(Z); if (zl > 1e-9) Z /= zl;
+            glm::dvec3 P(m.mat[3][0], m.mat[3][1], m.mat[3][2]);
+            auto& o = fx.aeLights[fx.aeLightN++];
+            o.color = col * (float)(std::max(0.0, inten) / 100.0);
+            o.shadow = shadow;
+            if (ty == AEGP_LightType_AMBIENT) { o.type = 2; o.pos = glm::vec3(0); }
+            else if (ty == AEGP_LightType_PARALLEL) {  // direction towards the light
+                o.type = 0; o.pos = glm::vec3((float)-Z.x, (float)Z.y, (float)Z.z) * 10.f;
+            } else {
+                o.type = 1; o.pos = glm::vec3((float)((P.x - W / 2) / u), (float)(-(P.y - H / 2) / u), (float)(-P.z / u));
+                if (ty == AEGP_LightType_SPOT) {
+                    AEGP_StreamVal ca, cf; AEFX_CLR_STRUCT(ca); AEFX_CLR_STRUCT(cf);
+                    double cone = 90, feather = 50;
+                    if (!ss->AEGP_GetLayerStreamValue(L, AEGP_LayerStream_CONE_ANGLE, AEGP_LTimeMode_CompTime, &t, FALSE, &ca, nullptr)) cone = ca.one_d;
+                    if (!ss->AEGP_GetLayerStreamValue(L, AEGP_LayerStream_CONE_FEATHER, AEGP_LTimeMode_CompTime, &t, FALSE, &cf, nullptr)) feather = cf.one_d;
+                    double half = glm::radians(std::clamp(cone, 1.0, 179.0) * 0.5);
+                    o.dir = glm::vec3((float)Z.x, (float)-Z.y, (float)-Z.z);
+                    o.cosOuter = (float)std::cos(half);
+                    o.cosInner = (float)std::cos(half * (1.0 - std::clamp(feather, 0.0, 100.0) / 100.0));
+                }
+            }
+        }
+    }
+    if (lt) sp->ReleaseSuite(kAEGPLightSuite, kAEGPLightSuiteVersion2);
+    if (is) sp->ReleaseSuite(kAEGPItemSuite, kAEGPItemSuiteVersion6);
+    if (cs) sp->ReleaseSuite(kAEGPCompSuite, kAEGPCompSuiteVersion4);
+    if (ss) sp->ReleaseSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion2);
+    if (ls) sp->ReleaseSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5);
+    sp->ReleaseSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
+}
+
+// Premiere hands effects sequence/media time; Auto Animate needs time since the clip starts so the
+// build moves with the clip when it's dragged along the timeline.
+static void clipRelativeTime(PF_InData* in_data, double& t, double& dur) {
+    if (in_data->appl_id == 'FXTC' || !in_data->pica_basicP || in_data->time_step <= 0) return;
+    const PF_UtilitySuite4* us = nullptr;
+    if (in_data->pica_basicP->AcquireSuite(kPFUtilitySuite, kPFUtilitySuiteVersion4, (const void**)&us) || !us) return;
+    A_long clipStart = 0, trackStart = 0, clipDur = 0;
+    bool okC = us->GetClipStart && !us->GetClipStart(in_data->effect_ref, &clipStart);
+    bool okT = us->GetTrackItemStart && !us->GetTrackItemStart(in_data->effect_ref, &trackStart);
+    bool okD = us->GetClipDuration && !us->GetClipDuration(in_data->effect_ref, &clipDur);
+    in_data->pica_basicP->ReleaseSuite(kPFUtilitySuite, kPFUtilitySuiteVersion4);
+    double ts = in_data->time_scale ? (double)in_data->time_scale : 1.0;
+    double frame = (double)in_data->time_step / ts;
+    // Premiere reports these in frames on some versions and in time_scale units on others: try both
+    double d = dur;
+    if (okD && clipDur > 0) { double a = clipDur * frame, b = clipDur / ts; d = (dur > 0 && std::fabs(b - dur) < std::fabs(a - dur)) ? b : a; }
+    double cands[4] = {okT ? trackStart * frame : -1.0, okT ? trackStart / ts : -1.0, okC ? clipStart * frame : -1.0, okC ? clipStart / ts : -1.0};
+    for (double o : cands) {
+        if (o <= 0) continue;
+        double r = t - o;
+        if (r >= -frame * 0.5 && (d <= 0 || r <= d + frame)) { t = std::max(0.0, r); break; }
+    }
+    if (d > 0) dur = d;
 }
 
 static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output) {
@@ -582,7 +751,7 @@ static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* para
             bool ok = true;
             for (int k = 0; k < P_NUM; k++) tmp[k] = params[k];
             for (int k = P_G0; k < P_NUM; k++) {
-                if (k >= P_REND && k < P_LET) continue;
+                if (k >= P_REND && k < P_FX) continue;
                 PF_ParamType ty = params[k]->param_type;
                 if (ty != PF_Param_FLOAT_SLIDER && ty != PF_Param_ANGLE) continue;
                 AEFX_CLR_STRUCT(defs[k]);
@@ -602,9 +771,32 @@ static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* para
     if (params[P_AE + 1]->u.bd.value) {
         FxParams cam;
         if (readAECamera(in_data, (float)params[P_AE + 2]->u.fs_d.value, cam)) {
-            auto copyCam = [&](FxParams& d) { d.aeCam = true; d.aePos = cam.aePos; d.aeFwd = cam.aeFwd; d.aeUp = cam.aeUp; d.aeFov = cam.aeFov; };
+            auto copyCam = [&](FxParams& d) { d.aeCam = true; d.aePos = cam.aePos; d.aeFwd = cam.aeFwd; d.aeUp = cam.aeUp; d.aeFov = cam.aeFov; d.aeDof = cam.aeDof; d.aeFocus = cam.aeFocus; d.aeAperture = cam.aeAperture; };
             copyCam(j.fx);
             for (auto& b : j.blur) copyCam(b);
+        }
+    }
+    // Auto Animate: letters build in after the clip starts / out before it ends
+    {
+        double ts = in_data->time_scale ? (double)in_data->time_scale : 1.0;
+        double t = in_data->current_time / ts, dur = in_data->total_time / ts;
+        clipRelativeTime(in_data, t, dur);
+        float a = 100.f;
+        if (params[P_AUTO + 1]->u.bd.value) a = std::min(a, (float)(t / std::max(0.05, params[P_AUTO + 2]->u.fs_d.value) * 100.0));
+        if (params[P_AUTO + 3]->u.bd.value && dur > 0) a = std::min(a, (float)((dur - t) / std::max(0.05, params[P_AUTO + 4]->u.fs_d.value) * 100.0));
+        a = std::clamp(a, 0.f, 100.f);
+        j.fx.autoLetters = a;
+        for (auto& b : j.blur) b.autoLetters = a;
+    }
+    // After Effects comp lights
+    if (params[P_AE + 3]->u.bd.value) {
+        FxParams lg;
+        readAELights(in_data, (float)params[P_AE + 2]->u.fs_d.value, lg);
+        if (lg.aeLightN > 0) {
+            bool keep = params[P_AE + 4]->u.bd.value != 0;
+            auto copyL = [&](FxParams& d) { d.aeLightN = lg.aeLightN; d.aeKeepLights = keep; for (int i = 0; i < lg.aeLightN; i++) d.aeLights[i] = lg.aeLights[i]; };
+            copyL(j.fx);
+            for (auto& b : j.blur) copyL(b);
         }
     }
     j.in = sameSize ? (const uint8_t*)input->data : nullptr; j.inRB = sameSize ? input->rowbytes : 0;
@@ -632,6 +824,60 @@ static std::string moduleDir() {
 static bool writeText(const std::string& p, const std::string& s) {
     FILE* f = _wfopen(widen(p).c_str(), L"wb"); if (!f) return false;
     fwrite(s.data(), 1, s.size(), f); fclose(f); return true;
+}
+
+// After Effects: turn the letter animation into real, editable keyframes on Animation > Letters Built
+// (0% at the layer's in-point, 100% after Build In Time) and switch Auto Animate's build-in off.
+// Premiere doesn't let effects create keyframes, so there Auto Animate does the job.
+static void addBuildKeyframes(PF_InData* in_data, PF_ParamDef* params[], const std::string& json) {
+    if (in_data->appl_id != 'FXTC' || !in_data->pica_basicP || !params[P_AUTO + 1]->u.bd.value) return;
+    Scene sc; std::string err;
+    if (!sceneFromJson(json, sc, err)) return;
+    bool anyLetters = false; for (auto& o : sc.objects) anyLetters |= o.letters.enabled && o.type == ObjType::Text;
+    if (!anyLetters) return;
+    SPBasicSuite* sp = in_data->pica_basicP;
+    const AEGP_PFInterfaceSuite1* pfi = nullptr; const AEGP_StreamSuite2* ss = nullptr; const AEGP_KeyframeSuite4* ks = nullptr;
+    const AEGP_EffectSuite2* es = nullptr; const AEGP_LayerSuite5* ls = nullptr; const AEGP_UtilitySuite3* us = nullptr;
+    sp->AcquireSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1, (const void**)&pfi);
+    sp->AcquireSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion2, (const void**)&ss);
+    sp->AcquireSuite(kAEGPKeyframeSuite, kAEGPKeyframeSuiteVersion4, (const void**)&ks);
+    sp->AcquireSuite(kAEGPEffectSuite, kAEGPEffectSuiteVersion2, (const void**)&es);
+    sp->AcquireSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5, (const void**)&ls);
+    sp->AcquireSuite(kAEGPUtilitySuite, kAEGPUtilitySuiteVersion3, (const void**)&us);
+    if (pfi && ss && ks && es && ls) {
+        AEGP_EffectRefH eff = nullptr; AEGP_LayerH layer = nullptr; AEGP_StreamRefH st = nullptr;
+        if (!pfi->AEGP_GetNewEffectForEffect(0, in_data->effect_ref, &eff) && eff && !pfi->AEGP_GetEffectLayer(in_data->effect_ref, &layer) && layer &&
+            !ss->AEGP_GetNewEffectStreamByIndex(0, eff, P_ANIM + 1, &st) && st) {
+            A_long nk = 0;
+            if (!ks->AEGP_GetStreamNumKFs(st, &nk) && nk == 0) {
+                A_Time in = {0, 1};
+                ls->AEGP_GetLayerInPoint(layer, AEGP_LTimeMode_LayerTime, &in);
+                double secs = std::max(0.1, (double)params[P_AUTO + 2]->u.fs_d.value);
+                A_Time t1 = in; t1.value = in.value + (A_long)std::lround(secs * in.scale);
+                if (us) us->AEGP_StartUndoGroup("Element Genie letter build");
+                AEGP_AddKeyframesInfoH ak = nullptr;
+                if (!ks->AEGP_StartAddKeyframes(st, &ak) && ak) {
+                    A_long i0 = 0, i1 = 0;
+                    AEGP_StreamValue2 v; AEFX_CLR_STRUCT(v); v.streamH = st;
+                    if (!ks->AEGP_AddKeyframes(ak, AEGP_LTimeMode_LayerTime, &in, &i0)) { v.val.one_d = 0; ks->AEGP_SetAddKeyframe(ak, i0, &v); }
+                    if (!ks->AEGP_AddKeyframes(ak, AEGP_LTimeMode_LayerTime, &t1, &i1)) { v.val.one_d = 100; ks->AEGP_SetAddKeyframe(ak, i1, &v); }
+                    ks->AEGP_EndAddKeyframes(TRUE, ak);
+                    // the keyframes now drive the build: stop Auto Animate doing it twice
+                    params[P_AUTO + 1]->u.bd.value = FALSE;
+                    params[P_AUTO + 1]->uu.change_flags = PF_ChangeFlag_CHANGED_VALUE;
+                }
+                if (us) us->AEGP_EndUndoGroup();
+            }
+        }
+        if (st) ss->AEGP_DisposeStream(st);
+        if (eff) es->AEGP_DisposeEffect(eff);
+    }
+    if (us) sp->ReleaseSuite(kAEGPUtilitySuite, kAEGPUtilitySuiteVersion3);
+    if (ls) sp->ReleaseSuite(kAEGPLayerSuite, kAEGPLayerSuiteVersion5);
+    if (es) sp->ReleaseSuite(kAEGPEffectSuite, kAEGPEffectSuiteVersion2);
+    if (ks) sp->ReleaseSuite(kAEGPKeyframeSuite, kAEGPKeyframeSuiteVersion4);
+    if (ss) sp->ReleaseSuite(kAEGPStreamSuite, kAEGPStreamSuiteVersion2);
+    if (pfi) sp->ReleaseSuite(kAEGPPFInterfaceSuite, kAEGPPFInterfaceSuiteVersion1);
 }
 
 static PF_Err RunSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[]) {
@@ -689,6 +935,7 @@ static PF_Err RunSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* pa
             params[P_SCENE]->u.arb_d.value = (PF_ArbitraryH)h;
             params[P_SCENE]->uu.change_flags = PF_ChangeFlag_CHANGED_VALUE;
             out_data->out_flags |= PF_OutFlag_FORCE_RERENDER | PF_OutFlag_REFRESH_UI;
+            addBuildKeyframes(in_data, params, nj);
         }
     }
     DeleteFileW(widen(inP).c_str()); DeleteFileW(widen(outP).c_str()); DeleteFileW(widen(refP).c_str());

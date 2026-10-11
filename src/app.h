@@ -77,6 +77,7 @@ struct App {
     bool setupMode = false;
     std::string setupOut;
     float previewLetters = 100.f;
+    float previewShatter = 0.f, previewRepBuild = 100.f;
     float parentPar = 1.f;
     bool askApply = false;
 };

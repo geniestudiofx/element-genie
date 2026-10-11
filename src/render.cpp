@@ -60,6 +60,7 @@ std::shared_ptr<Geometry> uploadGeometry(BuildResult& r) {
         glEnableVertexAttribArray(0); glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
         glEnableVertexAttribArray(1); glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)12);
         glEnableVertexAttribArray(2); glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)24);
+        glEnableVertexAttribArray(3); glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)32);
         glBindVertexArray(0);
         p.count = (int)m.i.size(); p.slot = m.slot; p.glyph = m.glyph; p.mat = m.mat;
         p.mat.baseTex = tex(m.mat.baseImg, true);
@@ -74,37 +75,84 @@ std::shared_ptr<Geometry> uploadGeometry(BuildResult& r) {
 
 // ============================================================ shaders
 static const char* VS_MESH = R"(#version 330 core
-layout(location=0) in vec3 aP; layout(location=1) in vec3 aN; layout(location=2) in vec2 aUV;
+layout(location=0) in vec3 aP; layout(location=1) in vec3 aN; layout(location=2) in vec2 aUV; layout(location=3) in vec4 aPiece;
 uniform mat4 uM, uVP; uniform mat3 uNM;
-uniform float uTwist; uniform int uTwistAxis; uniform vec3 uTwistC; uniform vec2 uTwistRange;
-out vec3 vP; out vec3 vN; out vec2 vUV;
-vec3 twistV(vec3 v, float a){
-  float c = cos(a), s = sin(a);
-  if (uTwistAxis == 0) return vec3(v.x, c*v.y - s*v.z, s*v.y + c*v.z);
-  if (uTwistAxis == 1) return vec3(c*v.x + s*v.z, v.y, -s*v.x + c*v.z);
-  return vec3(c*v.x - s*v.y, s*v.x + c*v.y, v.z);
-}
+uniform int uFx;                                   // 1 = deform, 2 = shatter
+uniform vec3 uBMin, uBMax; uniform int uAxis;
+uniform float uTwist, uBend, uTaper, uNoise, uNoiseScale, uNoiseT;
+uniform float uShAmt, uShForce, uShSpin, uShGrav, uShRand; uniform int uShDir;
+out vec3 vP; out vec3 vN; out vec2 vUV; out vec3 vLP; out vec3 vLN;
+vec3 hash3(vec3 p){ p = vec3(dot(p,vec3(127.1,311.7,74.7)), dot(p,vec3(269.5,183.3,246.1)), dot(p,vec3(113.5,271.9,124.6)));
+  return -1.0 + 2.0*fract(sin(p)*43758.5453123); }
+float gnoise(vec3 p){ vec3 i = floor(p), f = fract(p); vec3 u = f*f*(3.0-2.0*f);
+  float a = dot(hash3(i), f), b = dot(hash3(i+vec3(1,0,0)), f-vec3(1,0,0));
+  float c = dot(hash3(i+vec3(0,1,0)), f-vec3(0,1,0)), d = dot(hash3(i+vec3(1,1,0)), f-vec3(1,1,0));
+  float e = dot(hash3(i+vec3(0,0,1)), f-vec3(0,0,1)), g = dot(hash3(i+vec3(1,0,1)), f-vec3(1,0,1));
+  float h = dot(hash3(i+vec3(0,1,1)), f-vec3(0,1,1)), k = dot(hash3(i+vec3(1,1,1)), f-vec3(1,1,1));
+  return mix(mix(mix(a,b,u.x), mix(c,d,u.x), u.y), mix(mix(e,g,u.x), mix(h,k,u.x), u.y), u.z); }
+mat3 rotAxis(vec3 a, float ang){ float c = cos(ang), s = sin(ang), t = 1.0 - c;
+  return mat3(t*a.x*a.x+c, t*a.x*a.y+s*a.z, t*a.x*a.z-s*a.y,
+              t*a.x*a.y-s*a.z, t*a.y*a.y+c, t*a.y*a.z+s*a.x,
+              t*a.x*a.z+s*a.y, t*a.y*a.z-s*a.x, t*a.z*a.z+c); }
 void main(){
   vec3 p = aP, n = aN;
-  if (uTwist != 0.0) {
-    float along = uTwistAxis == 0 ? p.x : uTwistAxis == 1 ? p.y : p.z;
-    float a = uTwist * ((along - uTwistRange.x) / max(uTwistRange.y, 1e-5) - 0.5);
-    p = twistV(p - uTwistC, a) + uTwistC;
-    n = twistV(n, a);
+  vLP = aP; vLN = aN;
+  vec3 ctr = (uBMin + uBMax)*0.5;
+  if ((uFx & 2) != 0 && uShAmt > 0.0){
+    vec3 pc = aPiece.xyz; float r = aPiece.w;
+    vec3 rd = normalize(hash3(vec3(r*91.7, r*17.3, r*53.1)) + vec3(1e-4));
+    vec3 d;
+    if (uShDir == 0) d = normalize(pc - ctr + rd*0.05);
+    else if (uShDir == 1) d = normalize(vec3(0,0,1) + (pc - ctr)*0.35);
+    else if (uShDir == 2) d = normalize(vec3(0,1,0) + (pc - ctr)*0.35);
+    else d = rd;
+    d = normalize(mix(d, rd, uShRand) + vec3(1e-5));
+    float a = uShAmt;
+    vec3 off = d*uShForce*a*(0.6 + 0.8*fract(r*7.13)) - vec3(0,1,0)*uShGrav*a*a*uShForce;
+    mat3 R = rotAxis(normalize(hash3(vec3(r*13.1, r*71.9, r*29.3)) + vec3(1e-4)), radians(uShSpin)*a*(0.4 + 1.2*fract(r*3.71)));
+    p = pc + R*(p - pc) + off; n = R*n;
+  }
+  if ((uFx & 1) != 0){
+    vec3 ext = max(uBMax - uBMin, vec3(1e-4));
+    // local frame: x = bend direction, y = deform axis, z = the other one
+    mat3 B = uAxis == 0 ? mat3(vec3(0,1,0), vec3(1,0,0), vec3(0,0,-1))
+           : uAxis == 1 ? mat3(vec3(1,0,0), vec3(0,1,0), vec3(0,0,1))
+                        : mat3(vec3(0,1,0), vec3(0,0,1), vec3(1,0,0));
+    float L = dot(abs(B[1]), ext);
+    vec3 q = transpose(B)*(p - ctr), qn = transpose(B)*n;
+    float t = q.y/L;
+    float sc = max(0.0, 1.0 + uTaper*2.0*t); q.xz *= sc;
+    float ta = radians(uTwist)*t; float ct = cos(ta), st = sin(ta);
+    q.xz = mat2(ct, st, -st, ct)*q.xz; qn.xz = mat2(ct, st, -st, ct)*qn.xz;
+    float th = radians(uBend);
+    if (abs(th) > 1e-4){
+      float R = L/th, phi = th*t, rx = R - q.x;
+      q = vec3(R - rx*cos(phi), rx*sin(phi), q.z);
+      float cp = cos(phi), sp = sin(phi);
+      qn.xy = mat2(cp, -sp, sp, cp)*qn.xy;
+    }
+    p = ctr + B*q; n = B*qn;
+    if (uNoise > 0.0){
+      vec3 s = p*uNoiseScale + vec3(0.0, uNoiseT, uNoiseT*0.7);
+      p += uNoise*vec3(gnoise(s), gnoise(s + vec3(31.4,17.2,9.1)), gnoise(s + vec3(-7.7,43.3,21.5)));
+    }
   }
   vec4 w = uM*vec4(p,1.0); vP = w.xyz; vN = uNM*n; vUV = aUV; gl_Position = uVP*w;
 }
 )";
 
 static const char* FS_PBR = R"(#version 330 core
-in vec3 vP; in vec3 vN; in vec2 vUV;
+in vec3 vP; in vec3 vN; in vec2 vUV; in vec3 vLP; in vec3 vLN;
+uniform int uMapMode; uniform float uMapScale, uNormStr; uniform int uHasBaseMap, uHasRoughMap, uHasNormMap;
+uniform sampler2D tMapBase, tMapRough, tMapNorm;
+vec4 triSample(sampler2D t, vec3 p, vec3 w){ return texture(t, p.zy)*w.x + texture(t, p.xz)*w.y + texture(t, p.xy)*w.z; }
 out vec4 oCol;
 uniform vec3 uCam;
 uniform vec4 uBase; uniform float uMetal, uRough, uCoat; uniform vec3 uEmis;
 uniform sampler2D tBase, tMR, tNormal, tEmis;
 uniform int uHasNormal, uHasMR;
 uniform samplerCube tEnv; uniform float uEnvMax, uEnvInt; uniform mat3 uEnvRot;
-uniform int uNL; uniform vec4 uLP[4]; uniform vec3 uLC[4];
+uniform int uNL; uniform vec4 uLP[4]; uniform vec3 uLC[4]; uniform vec4 uLS[4]; uniform float uLSI[4];
 uniform sampler2D tShadow; uniform mat4 uShadowVP; uniform int uShadowL; uniform float uShadowSoft;
 uniform float uOpacity; uniform int uAlphaMode; uniform float uCutoff;
 uniform sampler2D tAO; uniform int uHasAO; uniform float uAOStrength; uniform vec2 uScreen;
@@ -157,6 +205,9 @@ float shadowF(vec3 p, vec3 n, vec3 L){
 }
 void main(){
   vec4 base = uBase*texture(tBase, vUV);
+  vec3 tw = pow(abs(normalize(vLN + vec3(1e-6))), vec3(4.0)); tw /= (tw.x + tw.y + tw.z + 1e-5);
+  vec3 tp = vLP*uMapScale; vec2 mUV = vUV*uMapScale;
+  if (uHasBaseMap == 1) base.rgb *= (uMapMode == 1 ? triSample(tMapBase, tp, tw) : texture(tMapBase, mUV)).rgb;
   if (uAlphaMode==1 && base.a < uCutoff) discard;
   float a = (uAlphaMode==2 ? base.a : 1.0)*uOpacity;
   if (uReflect==1){
@@ -165,8 +216,13 @@ void main(){
   }
   vec3 N = normalize(vN); if (!gl_FrontFacing) N = -N;
   if (uHasNormal==1){ vec3 tn = texture(tNormal, vUV).xyz*2.0 - 1.0; N = normalize(cotangent(N, vP, vUV)*tn); }
+  if (uHasNormMap==1){
+    vec2 nuv = uMapMode == 1 ? (tw.x > tw.y && tw.x > tw.z ? tp.zy : (tw.y > tw.z ? tp.xz : tp.xy)) : mUV;
+    vec3 tn = texture(tMapNorm, nuv).xyz*2.0 - 1.0; tn.xy *= uNormStr; N = normalize(cotangent(N, vP, nuv)*normalize(tn));
+  }
   vec4 mr = uHasMR==1 ? texture(tMR, vUV) : vec4(1.0);
-  float rough = clamp(uRough*mr.g, 0.035, 1.0), metal = clamp(uMetal*mr.b, 0.0, 1.0);
+  float rmap = uHasRoughMap == 1 ? (uMapMode == 1 ? triSample(tMapRough, tp, tw).r : texture(tMapRough, mUV).r)*2.0 : 1.0;
+  float rough = clamp(uRough*mr.g*rmap, 0.035, 1.0), metal = clamp(uMetal*mr.b, 0.0, 1.0);
   vec3 V = normalize(uCam - vP); float NV = max(dot(N,V), 1e-4);
   vec3 F0 = mix(vec3(0.04), base.rgb, metal); vec3 diff = base.rgb*(1.0-metal);
   vec3 col = vec3(0.0);
@@ -175,10 +231,18 @@ void main(){
     if (i>=uNL) break;
     vec3 L; float att = 1.0;
     if (uLP[i].w < 0.5) L = normalize(uLP[i].xyz);
-    else { vec3 d = uLP[i].xyz - vP; float dd = dot(d,d); L = d*inversesqrt(dd); att = 25.0/(dd + 1.0); }
+    else { vec3 d = uLP[i].xyz - vP; float dd = dot(d,d); L = d*inversesqrt(dd); att = uLP[i].w > 1.5 ? 1.0 : 25.0/(dd + 1.0);
+      if (uLS[i].w > -1.5) att *= smoothstep(uLS[i].w, max(uLSI[i], uLS[i].w + 1e-3), dot(-L, uLS[i].xyz)); }
     float NL = max(dot(N,L), 0.0); if (NL <= 0.0) continue;
     vec3 H = normalize(V+L); float NH = max(dot(N,H),0.0), VH = max(dot(V,H),0.0);
-    float D = a2/(PI*pow(NH*NH*(a2-1.0)+1.0, 2.0));
+    // lights have a size (sphere / sun disc): widen the highlight so it reads on glossy metal and follows the light
+    float ra = rough*rough;
+    float rl = uLP[i].w < 0.5 ? 0.16 : 1.0/max(length(uLP[i].xyz - vP), 0.3);
+    float al = clamp(ra + rl*0.5, 0.0, 1.0);
+    float a2l = al*al;
+    float D = a2l/(PI*pow(NH*NH*(a2l-1.0)+1.0, 2.0)) * max(ra/al, 0.35);
+    // broad sheen lobe: lets glossy/chrome surfaces visibly pick up where the light is (like Element 3D's light glints)
+    const float aw2 = 0.2025; D += 0.45*aw2/(PI*pow(NH*NH*(aw2-1.0)+1.0, 2.0));
     float k = (rough+1.0)*(rough+1.0)/8.0;
     float G = (NL/(NL*(1.0-k)+k))*(NV/(NV*(1.0-k)+k));
     vec3 F = F0 + (1.0-F0)*pow(1.0-VH, 5.0);
@@ -478,6 +542,49 @@ static const char* FS_BLIT = R"(#version 330 core
 in vec2 vUV; out vec4 oCol; uniform sampler2D tSrc; void main(){ oCol = texture(tSrc, vUV); }
 )";
 
+static const char* FS_FOG = R"(#version 330 core
+in vec2 vUV; out vec4 oCol; uniform sampler2D tSrc, tND; uniform vec3 uFogCol; uniform float uStart, uEnd, uAmt; uniform int uFade;
+void main(){ vec4 c = texture(tSrc, vUV); float z = texture(tND, vUV).a;
+  if (z >= 0.0 || c.a <= 0.0){ oCol = c; return; }
+  float f = smoothstep(uStart, max(uEnd, uStart + 1e-3), -z)*uAmt;
+  if (uFade == 1) oCol = c*(1.0 - f); else oCol = vec4(mix(c.rgb, uFogCol*c.a, f), c.a); }
+)";
+// Depth of field: gather blur that lets blurry foreground spread over sharp background but not the other way round
+static const char* FS_DOF = R"(#version 330 core
+in vec2 vUV; out vec4 oCol; uniform sampler2D tSrc, tND; uniform float uFocus, uScale, uMaxR; uniform vec2 uTexel;
+float depthAt(vec2 uv){ float z = texture(tND, uv).a; return z >= 0.0 ? 1e4 : -z; }
+float cocAt(float d){ return min(uMaxR, uScale*abs(d - uFocus)/max(d, 1e-3)); }
+void main(){
+  float dC = depthAt(vUV), cC = cocAt(dC);
+  vec4 acc = texture(tSrc, vUV); float ws = 1.0;
+  const int N = 80;
+  for (int i = 1; i < N; i++){
+    float r = sqrt(float(i)/float(N))*uMaxR, a = float(i)*2.39996323;
+    vec2 uv = vUV + vec2(cos(a), sin(a))*r*uTexel;
+    float dS = depthAt(uv), cS = cocAt(dS);
+    float cov = dS > dC ? min(cS, cC) : cS;
+    float w = clamp(cov - r + 1.0, 0.0, 1.0);
+    acc += texture(tSrc, uv)*w; ws += w;
+  }
+  oCol = acc/ws;
+}
+)";
+// Render passes for compositing: matte, depth, normals, ambient occlusion
+static const char* FS_PASS = R"(#version 330 core
+in vec2 vUV; out vec4 oCol; uniform sampler2D tHdr, tND, tAO; uniform int uPass; uniform float uNear, uFar;
+void main(){
+  float a = clamp(texture(tHdr, vUV).a, 0.0, 1.0);
+  vec4 nd = texture(tND, vUV); bool surf = nd.a < 0.0;
+  vec3 c;
+  if (uPass == 1) c = vec3(1.0);
+  else if (uPass == 2){ float d = surf ? -nd.a : uFar; c = vec3(1.0 - clamp((d - uNear)/max(uFar - uNear, 1e-3), 0.0, 1.0)); }
+  else if (uPass == 3) c = surf ? normalize(nd.xyz)*0.5 + 0.5 : vec3(0.5, 0.5, 1.0);
+  else c = vec3(texture(tAO, vUV).r);
+  if (uPass >= 2 && surf) a = max(a, 1.0);
+  oCol = vec4(c*a, a);
+}
+)";
+
 static unsigned compile(const char* vs, const std::string& fs, std::string& err, const char* name) {
     auto sh = [&](GLenum type, const char* src) {
         GLuint s = glCreateShader(type); glShaderSource(s, 1, &src, nullptr); glCompileShader(s);
@@ -514,6 +621,9 @@ bool Renderer::init(std::string& err) {
     progResolve = compile(VS_FULL, FS_RESOLVE, err, "resolve");
     progTonemap = compile(VS_FULL, FS_TONEMAP, err, "tonemap");
     progBlitPremul = compile(VS_FULL, FS_BLIT, err, "blit");
+    progFog = compile(VS_FULL, FS_FOG, err, "fog");
+    progDof = compile(VS_FULL, FS_DOF, err, "dof");
+    progPass = compile(VS_FULL, FS_PASS, err, "pass");
     glGenVertexArrays(1, &emptyVao);
     glGenVertexArrays(1, &lineVao); glGenBuffers(1, &lineVbo);
     glBindVertexArray(lineVao); glBindBuffer(GL_ARRAY_BUFFER, lineVbo);
@@ -656,6 +766,8 @@ static std::string geoKeyFor(const Object& o) {
     case ObjType::Primitive: k << '|' << o.prim; break;
     default: break;
     }
+    if (o.deform.active()) k << "|deform";
+    if (o.shatter.enabled) k << "|shatter" << o.shatter.pieces << ':' << o.shatter.seed;
     return k.str();
 }
 
@@ -683,6 +795,15 @@ bool Renderer::ensureGeometry(Object& o) {
     }
     o.geoError = r.error;
     if (r.meshes.empty()) { o.geo = nullptr; return false; }
+    if (o.deform.active() || o.shatter.enabled) {
+        vec3 mn, mx; computeBounds(r.meshes, mn, mx);
+        float diag = std::max(1e-3f, glm::length(mx - mn));
+        if (o.deform.active()) subdivideForDeform(r.meshes, diag / 60.f, 900000);
+        if (o.shatter.enabled) {
+            if (!o.deform.active()) subdivideForDeform(r.meshes, diag / 14.f, 300000);  // so pieces aren't just huge slivers
+            makeShatterPieces(r.meshes, o.shatter.pieces, o.shatter.seed);
+        }
+    }
     o.geo = uploadGeometry(r);
     if (o.type == ObjType::Model) shared[key] = o.geo;
     return true;
@@ -691,7 +812,122 @@ bool Renderer::ensureGeometry(Object& o) {
 // ============================================================ evaluation
 mat4 objectMatrix(const Object& o, float f) {
     vec3 p = o.pos.eval(f), r = glm::radians(o.rot.eval(f)), s = o.scl.eval(f);
-    return o.parentM * glm::translate(mat4(1), p) * glm::eulerAngleYXZ(r.y, r.x, r.z) * glm::scale(mat4(1), s);
+    return o.parentM * glm::translate(mat4(1), p) * glm::eulerAngleYXZ(r.y, r.x, r.z) * glm::scale(mat4(1), s * vec3(1, 1, o.depthMul));
+}
+
+static float hashf(unsigned x) { x ^= x >> 16; x *= 0x7feb352dU; x ^= x >> 15; x *= 0x846ca68bU; x ^= x >> 16; return (x & 0xffffff) / float(0xffffff); }
+
+std::vector<mat4> replicaMatrices(const Object& o, const LiveFx& lv, float f, float fps) {
+    const Replicator& r = o.rep;
+    if (!r.enabled) return {mat4(1)};
+    struct C { vec3 p; vec3 rot; };
+    std::vector<C> cs;
+    float sp = std::max(0.f, lv.repSpread);
+    const float PI = 3.14159265f;
+    auto faceOut = [&](vec3 dir) -> vec3 {  // yaw/pitch (degrees) that point +Z along dir
+        dir = glm::normalize(dir + vec3(1e-6f));
+        return vec3(-glm::degrees(std::asin(std::clamp(dir.y, -1.f, 1.f))), glm::degrees(std::atan2(dir.x, dir.z)), 0);
+    };
+    switch (r.shape) {
+    case 0: case 6: {  // grid / wave grid
+        int nx = std::clamp(r.cx, 1, 60), ny = r.shape == 6 ? 1 : std::clamp(r.cy, 1, 60), nz = std::clamp(r.cz, 1, 60);
+        float phase = (lv.noiseEvo + f / std::max(1.f, fps) * o.deform.noiseSpeed) * 2 * PI;
+        for (int z = 0; z < nz; z++) for (int y = 0; y < ny; y++) for (int x = 0; x < nx; x++) {
+            vec3 p((x - (nx - 1) * .5f) * r.spacing.x, (y - (ny - 1) * .5f) * r.spacing.y, (z - (nz - 1) * .5f) * r.spacing.z);
+            if (r.shape == 6) p.y = std::sin(p.x * 0.9f + p.z * 0.6f + phase) * r.waveHeight;
+            cs.push_back({p * sp, vec3(0)});
+        }
+        break;
+    }
+    case 1: {  // ring
+        int n = std::clamp(r.count, 1, 2000);
+        for (int i = 0; i < n; i++) { float a = 2 * PI * i / n; vec3 p(std::sin(a) * r.radius, 0, std::cos(a) * r.radius); cs.push_back({p * sp, r.faceCentre ? vec3(0, glm::degrees(a), 0) : vec3(0)}); }
+        break;
+    }
+    case 2: {  // sphere (even spread)
+        int n = std::clamp(r.count, 1, 2000);
+        for (int i = 0; i < n; i++) {
+            float y = n == 1 ? 0 : 1 - 2 * (i + .5f) / n, rr = std::sqrt(std::max(0.f, 1 - y * y)), a = i * 2.39996323f;
+            vec3 d(std::sin(a) * rr, y, std::cos(a) * rr);
+            cs.push_back({d * r.radius * sp, r.faceCentre ? faceOut(d) : vec3(0)});
+        }
+        break;
+    }
+    case 3: {  // spiral
+        int n = std::clamp(r.count, 1, 2000);
+        for (int i = 0; i < n; i++) {
+            float t = n == 1 ? .5f : i / float(n - 1), a = r.turns * 2 * PI * t;
+            vec3 p(std::sin(a) * r.radius, (t - .5f) * r.height, std::cos(a) * r.radius);
+            cs.push_back({p * sp, r.faceCentre ? vec3(0, glm::degrees(a), 0) : vec3(0)});
+        }
+        break;
+    }
+    case 4: {  // random cloud
+        int n = std::clamp(r.count, 1, 2000);
+        for (int i = 0; i < n; i++) {
+            unsigned h = (unsigned)(r.seed * 7919 + i * 104729);
+            vec3 p((hashf(h) - .5f) * 2 * r.radius, (hashf(h + 1) - .5f) * r.height, (hashf(h + 2) - .5f) * 2 * r.radius);
+            cs.push_back({p * sp, vec3(0)});
+        }
+        break;
+    }
+    default: {  // line
+        int n = std::clamp(r.count, 1, 2000);
+        for (int i = 0; i < n; i++) cs.push_back({r.spacing * (i - (n - 1) * .5f) * sp, vec3(0)});
+    }
+    }
+    int n = (int)cs.size();
+    float soft = std::max(1.f, n * 0.15f);
+    float build = std::clamp(lv.repBuild, 0.f, 1.f) * (n + soft);
+    mat4 arr = glm::rotate(mat4(1), glm::radians(lv.repRotate), vec3(0, 1, 0));
+    std::vector<mat4> out; out.reserve(n);
+    for (int i = 0; i < n; i++) {
+        unsigned h = (unsigned)(r.seed * 15485863 + i * 32452843);
+        vec3 rp = vec3(hashf(h), hashf(h + 11), hashf(h + 23)) * 2.f - 1.f;
+        vec3 rr = vec3(hashf(h + 37), hashf(h + 41), hashf(h + 53)) * 2.f - 1.f;
+        float rs = hashf(h + 61) * 2 - 1;
+        vec3 p = cs[i].p + rp * r.randPos * sp;
+        vec3 rot = glm::radians(cs[i].rot + rr * r.randRot);
+        float sc = std::max(0.f, (1 + rs * r.randScale) * (1 + r.scaleStep * i));
+        float b = std::clamp((build - i) / soft, 0.f, 1.f);
+        if (b < 1) { float c1 = 1.70158f, c3 = c1 + 1; float u = b - 1; b = 1 + c3 * u * u * u + c1 * u * u; }  // ease out with a little overshoot
+        sc *= b;
+        if (sc <= 1e-4f) continue;
+        out.push_back(arr * glm::translate(mat4(1), p) * glm::eulerAngleYXZ(rot.y, rot.x, rot.z) * glm::scale(mat4(1), vec3(sc)));
+    }
+    return out;
+}
+
+void Renderer::setFxUniforms(unsigned prog, const Scene& s, const Object& o, float f) {
+    int fx = 0;
+    const Deform& d = o.deform;
+    float dm = std::max(0.f, s.live.deform);
+    if (d.active() && dm > 0) fx |= 1;
+    if (o.shatter.enabled && s.live.shatter > 0) fx |= 2;
+    glUniform1i(U(prog, "uFx"), fx);
+    if (!fx) return;
+    glUniform3fv(U(prog, "uBMin"), 1, glm::value_ptr(o.geo->bmin));
+    glUniform3fv(U(prog, "uBMax"), 1, glm::value_ptr(o.geo->bmax));
+    glUniform1i(U(prog, "uAxis"), std::clamp(d.axis, 0, 2));
+    glUniform1f(U(prog, "uTwist"), d.twist * dm); glUniform1f(U(prog, "uBend"), d.bend * dm); glUniform1f(U(prog, "uTaper"), d.taper * dm);
+    glUniform1f(U(prog, "uNoise"), d.noise * dm); glUniform1f(U(prog, "uNoiseScale"), d.noiseScale);
+    glUniform1f(U(prog, "uNoiseT"), s.live.noiseEvo + f / std::max(1.f, s.comp.fps) * d.noiseSpeed);
+    const Shatter& h = o.shatter;
+    float a = std::clamp(s.live.shatter, 0.f, 1.f);
+    glUniform1f(U(prog, "uShAmt"), (fx & 2) ? a : 0.f);
+    glUniform1f(U(prog, "uShForce"), h.force); glUniform1f(U(prog, "uShSpin"), h.spin); glUniform1f(U(prog, "uShGrav"), h.gravity);
+    glUniform1f(U(prog, "uShRand"), std::clamp(h.randomness, 0.f, 1.f)); glUniform1i(U(prog, "uShDir"), h.direction);
+}
+
+unsigned Renderer::mapTex(const std::string& path, bool srgb) {
+    if (path.empty()) return 0;
+    std::string key = path + (srgb ? "|s" : "|l");
+    auto it = mapCache.find(key);
+    if (it != mapCache.end()) return it->second ? it->second->id : 0;
+    ImageData im; std::shared_ptr<Texture> t;
+    if (loadImageFile(path, im) && (!im.rgba.empty() || !im.rgbf.empty())) t = uploadTexture(im, srgb, true, false);
+    mapCache[key] = t;
+    return t ? t->id : 0;
 }
 
 static float hash01(int i) { unsigned x = (unsigned)i * 2654435761u; x ^= x >> 13; x *= 0x5bd1e995; x ^= x >> 15; return (x & 0xffff) / 65535.f; }
@@ -772,10 +1008,18 @@ bool worldBounds(const Scene& s, float f, vec3& mn, vec3& mx) {
     mn = vec3(1e30f); mx = vec3(-1e30f); bool any = false;
     for (auto& o : s.objects) {
         if (!o.visible || !o.geo) continue;
-        mat4 M = objectMatrix(o, f);
-        for (int i = 0; i < 8; i++) {
-            vec3 p((i & 1) ? o.geo->bmax.x : o.geo->bmin.x, (i & 2) ? o.geo->bmax.y : o.geo->bmin.y, (i & 4) ? o.geo->bmax.z : o.geo->bmin.z);
-            vec3 w = vec3(M * vec4(p, 1)); mn = glm::min(mn, w); mx = glm::max(mx, w); any = true;
+        mat4 M0 = objectMatrix(o, f);
+        vec3 a = o.geo->bmin, b = o.geo->bmax;
+        float grow = 0;
+        if (o.deform.active()) grow += o.deform.noise * std::max(0.f, s.live.deform) + (std::fabs(o.deform.bend) > 1e-3f ? glm::length(b - a) * 0.25f : 0.f);
+        if (o.shatter.enabled && s.live.shatter > 0) grow += o.shatter.force * 1.4f * std::clamp(s.live.shatter, 0.f, 1.f);
+        a -= vec3(grow); b += vec3(grow);
+        for (const mat4& Rm : replicaMatrices(o, s.live, f, s.comp.fps)) {
+            mat4 M = M0 * Rm;
+            for (int i = 0; i < 8; i++) {
+                vec3 p((i & 1) ? b.x : a.x, (i & 2) ? b.y : a.y, (i & 4) ? b.z : a.z);
+                vec3 w = vec3(M * vec4(p, 1)); mn = glm::min(mn, w); mx = glm::max(mx, w); any = true;
+            }
         }
     }
     if (!any) { mn = vec3(-1); mx = vec3(1); }
@@ -802,7 +1046,11 @@ static void fboFor(GLuint& f, GLuint tex) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
 }
 void RenderTarget::ensure(int W, int H, int S) {
-    GLint maxS = 4; glGetIntegerv(GL_MAX_SAMPLES, &maxS);
+    GLint maxS = 4, maxCT = 4, maxDT = 4;
+    glGetIntegerv(GL_MAX_SAMPLES, &maxS);
+    glGetIntegerv(GL_MAX_COLOR_TEXTURE_SAMPLES, &maxCT);
+    glGetIntegerv(GL_MAX_DEPTH_TEXTURE_SAMPLES, &maxDT);
+    maxS = std::max(1, std::min({maxS, maxCT, maxDT}));
     S = std::max(0, std::min(S, (int)maxS));
     if (W == w && H == h && S == samples && outFbo) return;
     release();
@@ -844,16 +1092,19 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
     mat4 VP = P * V;
     if (prepassMode) glUniformMatrix4fv(U(prog, "uV"), 1, GL_FALSE, glm::value_ptr(V));
     glUniformMatrix4fv(U(prog, "uVP"), 1, GL_FALSE, glm::value_ptr(VP));
-    struct Item { const Object* o; const Part* p; mat4 M; float op; float dist; };
+    struct Item { const Object* o; const Part* p; mat4 M; float op; float dist; bool solid; };
+    unsigned mb = 0, mr = 0, mn = 0;  // texture maps for the current item
     std::vector<Item> items;
     for (auto& o : s.objects) {
         if (!o.visible || !o.geo) continue;
         if (shadowPass && !prepassMode && !o.castShadow) continue;
         float oop = std::clamp(o.opacity.eval(f) * o.opacityMul, 0.f, 1.f);
         if (oop <= 0.001f) continue;
-        mat4 M = objectMatrix(o, f);
+        mat4 M0 = objectMatrix(o, f);
         int ng = (int)o.geo->glyphCenters.size();
+        for (const mat4& Rm : replicaMatrices(o, s.live, f, s.comp.fps))
         for (auto& p : o.geo->parts) {
+            mat4 M = M0 * Rm;
             float gop = 1.f;
             mat4 GM = glyphMatrix(o, p.glyph, ng, f, gop);
             float op = oop * gop;
@@ -864,7 +1115,8 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
             if (!shadowPass && transp != transparentPass) continue;
             mat4 MM = extraM * M * GM;
             vec3 c = vec3(MM * vec4((o.geo->bmin + o.geo->bmax) * .5f, 1));
-            items.push_back({&o, &p, MM, op, glm::length(c - camPos)});
+            bool solid = op < 0.999f && !(modelMat && p.mat.alphaMode == 2) && o.type != ObjType::ImageCard;  // fading solid, not glass
+            items.push_back({&o, &p, MM, op, glm::length(c - camPos), solid});
         }
     }
     if (transparentPass) std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.dist > b.dist; });
@@ -882,14 +1134,18 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
         glUniform1f(U(prog, "uDepthRange"), depthRangeCur);
         glUniform1f(U(prog, "uTexPerWorld"), texPerWorldCur);
         // lights
-        vec4 lp[4]; vec3 lc[4]; int nl = 0;
+        vec4 lp[4]; vec3 lc[4]; vec4 ls[4]; float lsi[4]; int nl = 0;
         for (auto& l : s.lights) {
             if (!l.enabled || nl >= 4) continue;
             vec3 p = l.pos.eval(f);
             lp[nl] = vec4(l.type == 0 ? glm::normalize(p + vec3(1e-6f)) : p, (float)l.type);
             lc[nl] = l.color * std::max(0.f, l.intensity.eval(f));
+            ls[nl] = vec4(glm::normalize(l.spotDir + vec3(1e-6f)), l.type == 0 ? -2.f : l.spotCos); lsi[nl] = l.spotInner;
             nl++;
         }
+        for (int k = nl; k < 4; k++) { ls[k] = vec4(0, 0, -1, -2); lsi[k] = -2; }
+        glUniform4fv(U(prog, "uLS"), 4, glm::value_ptr(ls[0]));
+        glUniform1fv(U(prog, "uLSI"), 4, lsi);
         glUniform1i(U(prog, "uNL"), nl);
         glUniform4fv(U(prog, "uLP"), 4, glm::value_ptr(lp[0]));
         glUniform3fv(U(prog, "uLC"), 4, glm::value_ptr(lc[0]));
@@ -898,6 +1154,17 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
         glUniformMatrix4fv(U(prog, "uShadowVP"), 1, GL_FALSE, glm::value_ptr(shadowVP));
         glUniform1f(U(prog, "uShadowSoft"), s.catcher.softness);
         float er = glm::radians(s.env.rotation.eval(f));
+        if (s.env.followLight) {
+            for (auto& l : s.lights) {
+                if (!l.enabled) continue;
+                vec3 Ld = l.type == 0 ? l.pos.eval(f) : l.pos.eval(f);
+                if (Ld.x * Ld.x + Ld.z * Ld.z > 1e-6f) {
+                    const vec3 r0(3, 5, 4);  // the default key light: no change there
+                    er -= std::atan2(Ld.x, Ld.z) - std::atan2(r0.x, r0.z);
+                }
+                break;
+            }
+        }
         mat3 envRot = mat3(glm::rotate(mat4(1), er, vec3(0, 1, 0)));
         glUniformMatrix3fv(U(prog, "uEnvRot"), 1, GL_FALSE, glm::value_ptr(envRot));
         glUniform1f(U(prog, "uEnvMax"), (float)(envMips - 1));
@@ -907,19 +1174,28 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
         glActiveTexture(GL_TEXTURE4); glBindTexture(GL_TEXTURE_CUBE_MAP, envCube);
         glActiveTexture(GL_TEXTURE5); glBindTexture(GL_TEXTURE_2D, shadowTex);
     }
+    // Fading letters/objects should fade as solids: lay down their depth first so only the nearest
+    // surface blends (otherwise you see the back faces and insides through them while they animate).
+    bool depthPre = transparentPass && !shadowPass && !prepassMode;
+    if (depthPre) {
+        bool any = false; for (auto& it : items) any |= it.solid;
+        if (any) {
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE); glDepthMask(GL_TRUE);
+            glUniform1f(U(prog, "uOpacity"), 1.f); glUniform1i(U(prog, "uAlphaMode"), 0);
+            for (auto& it : items) if (it.solid) {
+                glUniformMatrix4fv(U(prog, "uM"), 1, GL_FALSE, glm::value_ptr(it.M));
+                setFxUniforms(prog, s, *it.o, f);
+                glBindVertexArray(it.p->vao);
+                glDrawElements(GL_TRIANGLES, it.p->count, GL_UNSIGNED_INT, 0);
+            }
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE); glDepthMask(GL_FALSE);
+            glDepthFunc(GL_LEQUAL);
+        } else depthPre = false;
+    }
     for (auto& it : items) {
         const Object& o = *it.o; const Part& p = *it.p;
         glUniformMatrix4fv(U(prog, "uM"), 1, GL_FALSE, glm::value_ptr(it.M));
-        {
-            int ax = std::clamp(o.twistAxis, 0, 2);
-            vec3 bmn = o.geo->bmin, bmx = o.geo->bmax, ctr = (bmn + bmx) * .5f;
-            float len = bmx[ax] - bmn[ax];
-            float start = bmn[ax] - o.twistOffset * len;
-            glUniform1f(U(prog, "uTwist"), glm::radians(o.twist));
-            glUniform1i(U(prog, "uTwistAxis"), ax);
-            glUniform3fv(U(prog, "uTwistC"), 1, glm::value_ptr(ctr));
-            glUniform2f(U(prog, "uTwistRange"), start, len);
-        }
+        setFxUniforms(prog, s, o, f);
         if (prepassMode) {
             mat3 NM = glm::transpose(glm::inverse(mat3(it.M)));
             glUniformMatrix3fv(U(prog, "uNM"), 1, GL_FALSE, glm::value_ptr(NM));
@@ -948,6 +1224,14 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
                 m.emis = vec3(m.base) * om.emissiveStrength;
                 if (p.mat.baseTex) m.te = p.mat.baseTex->id;
             }
+            bool maps = !modelMat && !(imageMat && p.mat.baseTex);
+            mb = maps ? mapTex(om.baseMap, true) : 0; mr = maps ? mapTex(om.roughMap, false) : 0; mn = maps ? mapTex(om.normalMap, false) : 0;
+            glUniform1i(U(prog, "uHasBaseMap"), mb ? 1 : 0); glUniform1i(U(prog, "uHasRoughMap"), mr ? 1 : 0); glUniform1i(U(prog, "uHasNormMap"), mn ? 1 : 0);
+            glUniform1i(U(prog, "uMapMode"), om.mapping); glUniform1f(U(prog, "uMapScale"), std::max(0.001f, om.mapScale)); glUniform1f(U(prog, "uNormStr"), om.normalStrength);
+            glUniform1i(U(prog, "tMapBase"), 7); glUniform1i(U(prog, "tMapRough"), 8); glUniform1i(U(prog, "tMapNorm"), 9);
+            glActiveTexture(GL_TEXTURE7); glBindTexture(GL_TEXTURE_2D, mb ? mb : whiteTex);
+            glActiveTexture(GL_TEXTURE8); glBindTexture(GL_TEXTURE_2D, mr ? mr : whiteTex);
+            glActiveTexture(GL_TEXTURE9); glBindTexture(GL_TEXTURE_2D, mn ? mn : whiteTex);
             glUniform4fv(U(prog, "uBase"), 1, glm::value_ptr(m.base));
             glUniform1f(U(prog, "uMetal"), m.metal); glUniform1f(U(prog, "uRough"), m.rough); glUniform1f(U(prog, "uCoat"), m.coat);
             glUniform3fv(U(prog, "uEmis"), 1, glm::value_ptr(m.emis));
@@ -964,6 +1248,7 @@ void Renderer::drawObjects(Scene& s, float f, const mat4& V, const mat4& P, cons
         glDrawElements(GL_TRIANGLES, p.count, GL_UNSIGNED_INT, 0);
     }
     glBindVertexArray(0);
+    if (depthPre) glDepthFunc(GL_LESS);
 }
 
 void Renderer::drawLines(const std::vector<vec3>& pts, const vec4& col, const mat4& VP) {
@@ -989,7 +1274,7 @@ void Renderer::renderPass(Scene& s, float f, RenderTarget& rt, const ViewOptions
         if (!l.enabled) continue;
         if (li >= 4) break;
         if (shadowL < 0 && l.shadow && l.type == 0) { shadowL = li; L = glm::normalize(l.pos.eval(f) + vec3(1e-6f)); }
-        if (shadowL < 0 && l.shadow && l.type == 1) { shadowL = li; L = glm::normalize(l.pos.eval(f) - centre + vec3(1e-6f)); }
+        if (shadowL < 0 && l.shadow && l.type >= 1) { shadowL = li; L = glm::normalize(l.pos.eval(f) - centre + vec3(1e-6f)); }
         li++;
     }
     float groundY = s.catcher.autoHeight ? mn.y : s.catcher.height;
@@ -1018,7 +1303,11 @@ void Renderer::renderPass(Scene& s, float f, RenderTarget& rt, const ViewOptions
     // ambient occlusion: normals + depth, then occlusion, then blur
     aoTexCur = 0;
     screenCur = glm::vec2(rt.w, rt.h);
-    if (s.quality.ao && any) {
+    bool doAO = s.quality.ao || s.live.pass == 4;
+    bool needND = doAO || s.lens.dof || s.fog.enabled || s.live.pass >= 2;
+    ndValid = false;
+    if (needND && any) {
+        ndValid = true;
         glBindFramebuffer(GL_FRAMEBUFFER, rt.ndFbo);
         glViewport(0, 0, rt.w, rt.h);
         glClearColor(0, 0, 0, 1);  // alpha >= 0 means "no surface" (surfaces have negative view z)
@@ -1034,6 +1323,7 @@ void Renderer::renderPass(Scene& s, float f, RenderTarget& rt, const ViewOptions
         }
         prepassMode = false;
         glDisable(GL_DEPTH_TEST);
+        if (doAO) {
         static vec3 kernel[16]; static bool kInit = false;
         if (!kInit) {
             for (int i = 0; i < 16; i++) {
@@ -1059,6 +1349,7 @@ void Renderer::renderPass(Scene& s, float f, RenderTarget& rt, const ViewOptions
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, rt.aoTex);
         drawFullscreen();
         aoTexCur = rt.ao2Tex;
+        }
         glEnable(GL_DEPTH_TEST);
     }
     // main pass
@@ -1154,6 +1445,63 @@ unsigned Renderer::render(Scene& s, float f, RenderTarget& rt, const ViewOptions
     } else renderPass(s, f, rt, vo);
 
     glDisable(GL_DEPTH_TEST); glDisable(GL_BLEND);
+    // render passes for compositing
+    if (s.live.pass > 0) {
+        float aspect = vo.aspect > 0 ? vo.aspect : rt.w / float(rt.h);
+        CamEval cam = evalCamera(s, f, aspect);
+        vec3 mn, mx; worldBounds(s, f, mn, mx);
+        float nearD = 1e30f, farD = 0;
+        for (int i = 0; i < 8; i++) { vec3 p((i & 1) ? mx.x : mn.x, (i & 2) ? mx.y : mn.y, (i & 4) ? mx.z : mn.z); float d = -(cam.view * vec4(p, 1)).z; nearD = std::min(nearD, d); farD = std::max(farD, d); }
+        nearD = std::max(0.01f, nearD);
+        glBindFramebuffer(GL_FRAMEBUFFER, rt.outFbo); glViewport(0, 0, rt.w, rt.h);
+        glClearColor(0, 0, 0, 0); glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(progPass);
+        glUniform1i(U(progPass, "tHdr"), 0); glUniform1i(U(progPass, "tND"), 1); glUniform1i(U(progPass, "tAO"), 2);
+        glUniform1i(U(progPass, "uPass"), s.live.pass); glUniform1f(U(progPass, "uNear"), nearD); glUniform1f(U(progPass, "uFar"), farD);
+        glActiveTexture(GL_TEXTURE2); glBindTexture(GL_TEXTURE_2D, rt.ao2Tex);
+        glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, ndValid ? rt.ndTex : whiteTex);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, hdrSrc);
+        drawFullscreen();
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        return rt.outTex;
+    }
+    // fog, then depth of field (both work from the depth buffer)
+    if (ndValid) {
+        auto other = [&](GLuint src) { return src == rt.hdrTex ? std::make_pair(rt.accFbo, rt.accTex) : std::make_pair(rt.hdrFbo, rt.hdrTex); };
+        if (s.fog.enabled && s.fog.amount * s.live.fogMul > 0.001f) {
+            auto dst = other(hdrSrc);
+            glBindFramebuffer(GL_FRAMEBUFFER, dst.first); glViewport(0, 0, rt.w, rt.h);
+            glUseProgram(progFog);
+            glUniform1i(U(progFog, "tSrc"), 0); glUniform1i(U(progFog, "tND"), 1);
+            vec3 fc = glm::pow(s.fog.color, vec3(2.2f)) * s.env.intensity;
+            glUniform3fv(U(progFog, "uFogCol"), 1, glm::value_ptr(fc));
+            glUniform1f(U(progFog, "uStart"), s.fog.start); glUniform1f(U(progFog, "uEnd"), s.fog.end);
+            glUniform1f(U(progFog, "uAmt"), std::clamp(s.fog.amount * s.live.fogMul, 0.f, 1.f)); glUniform1i(U(progFog, "uFade"), s.fog.fadeOut ? 1 : 0);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, rt.ndTex);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, hdrSrc);
+            drawFullscreen();
+            hdrSrc = dst.second;
+        }
+        float scale = s.lens.aperture * std::max(0.f, s.live.blurMul) * 0.05f * rt.h;
+        if (s.lens.dof && scale > 0.3f) {
+            float aspect = vo.aspect > 0 ? vo.aspect : rt.w / float(rt.h);
+            CamEval cam = evalCamera(s, f, aspect);
+            float focus = s.lens.focus;
+            if (s.lens.autoFocus) { vec3 mn, mx; worldBounds(s, f, mn, mx); focus = -(cam.view * vec4((mn + mx) * .5f, 1)).z; }
+            focus = std::max(0.05f, focus + s.live.focusOffset);
+            auto dst = other(hdrSrc);
+            glBindFramebuffer(GL_FRAMEBUFFER, dst.first); glViewport(0, 0, rt.w, rt.h);
+            glUseProgram(progDof);
+            glUniform1i(U(progDof, "tSrc"), 0); glUniform1i(U(progDof, "tND"), 1);
+            glUniform1f(U(progDof, "uFocus"), focus); glUniform1f(U(progDof, "uScale"), scale);
+            glUniform1f(U(progDof, "uMaxR"), std::min(scale, 0.05f * rt.h));
+            glUniform2f(U(progDof, "uTexel"), 1.f / rt.w, 1.f / rt.h);
+            glActiveTexture(GL_TEXTURE1); glBindTexture(GL_TEXTURE_2D, rt.ndTex);
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, hdrSrc);
+            drawFullscreen();
+            hdrSrc = dst.second;
+        }
+    }
     // glow
     if (s.glow > 0.001f) {
         glUseProgram(progBright); glUniform1i(U(progBright, "tSrc"), 0); glUniform1f(U(progBright, "uThr"), s.glowThreshold);
