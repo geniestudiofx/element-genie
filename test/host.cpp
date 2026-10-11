@@ -53,7 +53,7 @@ int main(int argc, char** argv){
     std::string arg=argv[a]; size_t eq=arg.find('='); int idx=atoi(arg.substr(0,eq).c_str()); double val=atof(arg.substr(eq+1).c_str());
     if (arg[0]=='A'){ animIndex=atoi(arg.substr(1,eq-1).c_str()); animDegPerFrame=val; continue; }
     auto& d=cur[idx];
-    if(d.param_type==PF_Param_FLOAT_SLIDER) d.u.fs_d.value=val; else if(d.param_type==PF_Param_ANGLE) d.u.ad.value=FLOAT2FIX(val); else if(d.param_type==PF_Param_CHECKBOX) d.u.bd.value=(PF_Boolean)val; }
+    if(d.param_type==PF_Param_FLOAT_SLIDER) d.u.fs_d.value=val; else if(d.param_type==PF_Param_ANGLE) d.u.ad.value=FLOAT2FIX(val); else if(d.param_type==PF_Param_CHECKBOX) d.u.bd.value=(PF_Boolean)val; else if(d.param_type==PF_Param_POPUP) d.u.pd.value=(A_long)val; }
   std::vector<unsigned char> inpx(W*H*4), outpx(W*H*4);
   for(int y=0;y<H;y++)for(int x=0;x<W;x++){ unsigned char* p=&inpx[(y*W+x)*4]; p[0]=255; p[1]=(unsigned char)(40+x*80/W); p[2]=(unsigned char)(60+y*100/H); p[3]=((x/80+y/80)&1)?120:90; }
   PF_LayerDef inw; memset(&inw,0,sizeof inw); inw.data=(PF_PixelPtr)inpx.data(); inw.width=W; inw.height=H; inw.rowbytes=W*4;
@@ -69,6 +69,35 @@ int main(int argc, char** argv){
     printf("setup %d flags %x change %x\n", e, od.out_flags, cur[2].uu.change_flags);
     HB* hb=(HB*)cur[2].u.arb_d.value; printf("scene now %llu bytes: %.120s\n", hb->size, (char*)hb->data+8);
     e = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr); printf("render after setup %d\n", e);
+  }
+  if (getenv("EG_SWEEP")) {
+    std::vector<unsigned char> base = outpx;
+    auto stats = [&](const char* tag){
+      double diff=0; long changed=0; double mean=0; long zeroA=0;
+      for (int i=0;i<W*H;i++){ int d=0; for(int c=0;c<4;c++){ int v=abs((int)outpx[i*4+c]-(int)base[i*4+c]); d+=v; } diff+=d; if(d>12) changed++; mean+=outpx[i*4+1]+outpx[i*4+2]+outpx[i*4+3]; }
+      printf("SW %s changed=%ld meandiff=%.3f mean=%.1f\n", tag, changed, diff/(W*H), mean/(W*H*3));
+      fflush(stdout);
+    };
+    for (size_t k=3;k<cur.size();k++){
+      PF_ParamDef save=cur[k]; char tag[160];
+      std::vector<double> vals; int ty=cur[k].param_type;
+      if (ty==PF_Param_FLOAT_SLIDER) { vals={cur[k].u.fs_d.slider_min, cur[k].u.fs_d.slider_max}; }
+      else if (ty==PF_Param_ANGLE) { vals={-90,90}; }
+      else if (ty==PF_Param_POPUP) { for(int c=1;c<=cur[k].u.pd.num_choices;c++) if(c!=cur[k].u.pd.value) vals.push_back(c); }
+      else if (ty==PF_Param_CHECKBOX) { vals={(double)!cur[k].u.bd.value}; }
+      else continue;
+      for (double v: vals){
+        if(ty==PF_Param_FLOAT_SLIDER) cur[k].u.fs_d.value=v; else if(ty==PF_Param_ANGLE) cur[k].u.ad.value=FLOAT2FIX(v); else if(ty==PF_Param_POPUP) cur[k].u.pd.value=(A_long)v; else cur[k].u.bd.value=(PF_Boolean)v;
+        od.return_msg[0]=0;
+        DWORD t1=GetTickCount(); PF_Err er = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr);
+        snprintf(tag,sizeof tag,"%zu '%s' =%g err=%d %lums msg='%s'", k, cur[k].PF_DEF_NAME, v, er, GetTickCount()-t1, od.return_msg);
+        stats(tag);
+        if (getenv("EG_SWEEP_PNG")) { int w4=W/4,h4=H/4; std::vector<unsigned char> rg(w4*h4*3); for(int y=0;y<h4;y++)for(int x=0;x<w4;x++){ const unsigned char* q=&outpx[((y*4)*W+x*4)*4]; unsigned char* d=&rg[(y*w4+x)*3]; d[0]=q[1]; d[1]=q[2]; d[2]=q[3]; }
+          char fn[64]; snprintf(fn,sizeof fn,"sw/%03zu_%g.png",k,v); stbi_write_png(fn,w4,h4,3,rg.data(),w4*3); }
+      }
+      cur[k]=save;
+    }
+    return 0;
   }
   std::vector<unsigned char> rgba(W*H*4);
   for(int i=0;i<W*H;i++){ rgba[i*4]=outpx[i*4+1]; rgba[i*4+1]=outpx[i*4+2]; rgba[i*4+2]=outpx[i*4+3]; rgba[i*4+3]=outpx[i*4]; }
