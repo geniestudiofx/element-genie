@@ -16,5 +16,6 @@ Element Genie is built on these open-source projects. Each keeps its own licence
 | [cgltf](https://github.com/jkuhlmann/cgltf) | glTF / GLB import | MIT |
 | [nlohmann/json](https://github.com/nlohmann/json) | Scene files | MIT |
 | [Inter](https://rsms.me/inter/) | Interface and 3D text font (embedded in `src/fonts.cpp`) | SIL Open Font License 1.1 |
+| Anton, Audiowide, Bebas Neue, Black Ops One, Bungee, Cinzel, Cinzel Decorative, Orbitron, Pirata One, Playfair Display, Russo One ([Google Fonts](https://github.com/google/fonts)) | Cinematic title fonts (in `ext/cinefonts`, embedded in `src/fonts_cine.cpp`) | SIL Open Font License 1.1 |
 
 **Adobe After Effects SDK** — needed to build the plug-in. It is not included in this repository and is not open source; download it free from Adobe.

@@ -17,17 +17,19 @@ cobj() { local src=$1 out=build/obj/$2.o; shift 2
   if [ ! -f $out ] || [ $src -nt $out ]; then echo "  cc $src"; $CC -O2 -w $INC -c $src -o $out; fi; }
 # headers changed -> rebuild our sources
 HDRS=$(ls -t src/*.h | head -1)
-for f in render extrude import project effect export platform plugin main; do
+for f in render extrude import project effect export platform plugin main fxgeo; do
   if [ -f build/obj/$f.o ] && [ $HDRS -nt build/obj/$f.o ]; then rm -f build/obj/$f.o; fi
 done
 cobj ext/glad/src/gl.c glad
 cobj ext/ufbx/ufbx.c ufbx
 obj src/fonts.cpp fonts -O0
+[ -f src/fonts_cine.cpp ] || python3 tools/embed_fonts.py
+obj src/fonts_cine.cpp fonts_cine -O0
 obj src/libs.cpp libs
-for f in render extrude import project effect export platform; do obj src/$f.cpp $f; done
+for f in render extrude import project effect export platform fxgeo; do obj src/$f.cpp $f; done
 SDKINC="-I$SDK/Headers -I$SDK/Headers/SP -I$SDK/Headers/adobesdk -I$SDK/Util"
 obj src/plugin.cpp plugin $SDKINC -D_WINDOWS -DMSWindows
-COMMON="build/obj/glad.o build/obj/ufbx.o build/obj/fonts.o build/obj/libs.o build/obj/render.o build/obj/extrude.o build/obj/import.o build/obj/project.o build/obj/effect.o"
+COMMON="build/obj/fxgeo.o build/obj/glad.o build/obj/ufbx.o build/obj/fonts.o build/obj/fonts_cine.o build/obj/libs.o build/obj/render.o build/obj/extrude.o build/obj/import.o build/obj/project.o build/obj/effect.o"
 echo "  link ElementGenie.aex"
 $CXX -shared -o build/ElementGenie.aex build/obj/plugin.o $COMMON plugin/pipl.o -static -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -luser32 -lshell32 -lole32 -Wl,--kill-at -s
 echo ok
@@ -45,6 +47,9 @@ $CXX -o "build/Element Genie Scene Setup.exe" build/obj/main.o build/obj/platfor
   build/obj/app_res.o build/glfw/src/libglfw3.a -static -static-libgcc -static-libstdc++ -mwindows -lopengl32 -lgdi32 -lcomdlg32 -lshell32 -lole32 -luuid -lwinmm -s 2>&1 | grep -v "warning" | head -20
 echo ok2
 # ---- installer
+python3 tools/make_lamp.py "samples/Genie Lamp.glb" >/dev/null
+python3 tools/pack_models.py build/models.pack "Models/Genie Lamp.glb=samples/Genie Lamp.glb" "Presets/Cinematic.egpack=presets/Cinematic.egpack"
+python3 -c "import zlib,sys; [open(o,'wb').write(zlib.compress(open(i,'rb').read(),9)) for i,o in [('build/ElementGenie.aex','build/ElementGenie.aex.z'),('build/Element Genie Scene Setup.exe','build/SceneSetup.exe.z'),('build/models.pack','build/models.pack.z')]]"
 x86_64-w64-mingw32-windres -I src src/installer.rc -O coff -o build/obj/installer_res.o
-$CXX -O2 -municode -mwindows -o "build/Element Genie Installer.exe" src/installer.cpp build/obj/installer_res.o -static -static-libgcc -static-libstdc++ -lshell32 -ladvapi32 -s
+$CXX -O2 -municode -mwindows -o "build/Element Genie Installer.exe" src/installer.cpp build/obj/installer_res.o -Iext/stb -static -static-libgcc -static-libstdc++ -lshell32 -ladvapi32 -lmsimg32 -lgdi32 -luser32 -s
 echo ok3
