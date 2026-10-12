@@ -3,7 +3,14 @@
 #include "AE_Effect.h"
 #include "AE_EffectCB.h"
 #include "AE_Macros.h"
+#ifdef _WIN32
 #include <windows.h>
+static unsigned long ticks(){ return GetTickCount(); }
+#else
+#include <dlfcn.h>
+#include <sys/time.h>
+static unsigned long ticks(){ timeval tv; gettimeofday(&tv,nullptr); return (unsigned long)(tv.tv_sec*1000+tv.tv_usec/1000); }
+#endif
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -32,8 +39,14 @@ static PF_Err platData(PF_ProgPtr, PF_PlatDataID, void* d){ *(void**)d = nullptr
 int main(int argc, char** argv){
   const char* scene = argc>1? argv[1]:nullptr;
   const char* out = argc>2? argv[2]:"out.png";
-  HMODULE h = LoadLibraryA("ElementGenie.aex"); if(!h){ printf("LoadLibrary failed %lu\n", GetLastError()); return 1; }
+  const char* plug = getenv("EG_PLUGIN") ? getenv("EG_PLUGIN") : "ElementGenie.aex";
+#ifdef _WIN32
+  HMODULE h = LoadLibraryA(plug); if(!h){ printf("LoadLibrary failed %lu\n", GetLastError()); return 1; }
   Main m = (Main)GetProcAddress(h, "EffectMain");
+#else
+  void* h = dlopen(plug, RTLD_NOW|RTLD_LOCAL); if(!h){ printf("dlopen failed %s\n", dlerror()); return 1; }
+  Main m = (Main)dlsym(h, "EffectMain"); if(!m){ printf("no EffectMain\n"); return 1; }
+#endif
   static PF_UtilCallbacks utils; memset(&utils,0,sizeof utils);
   utils.host_new_handle=hnew; utils.host_lock_handle=hlock; utils.host_unlock_handle=hunlock; utils.host_dispose_handle=hdispose; utils.host_get_handle_size=hsize; utils.host_resize_handle=hresize; utils.get_platform_data=platData;
   PF_InData in; memset(&in,0,sizeof in); PF_OutData od; memset(&od,0,sizeof od);
@@ -60,9 +73,9 @@ int main(int argc, char** argv){
   PF_LayerDef outw=inw; outw.data=(PF_PixelPtr)outpx.data();
   cur[0].u.ld=inw;
   std::vector<PF_ParamDef*> pp; for(auto& d:cur) pp.push_back(&d);
-  DWORD t0=GetTickCount();
-  e = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr); printf("render %d %lums msg='%s'\n", e, GetTickCount()-t0, od.return_msg);
-  t0=GetTickCount(); e = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr); printf("render2 %d %lums\n", e, GetTickCount()-t0);
+  unsigned long t0=ticks();
+  e = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr); printf("render %d %lums msg='%s'\n", e, ticks()-t0, od.return_msg);
+  t0=ticks(); e = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr); printf("render2 %d %lums\n", e, ticks()-t0);
   if (getenv("EG_SETUP")) {
     PF_UserChangedParamExtra ex; ex.param_index=1; od.out_flags=0;
     e = m(PF_Cmd_USER_CHANGED_PARAM,&in,&od,pp.data(),nullptr,&ex);
@@ -89,8 +102,8 @@ int main(int argc, char** argv){
       for (double v: vals){
         if(ty==PF_Param_FLOAT_SLIDER) cur[k].u.fs_d.value=v; else if(ty==PF_Param_ANGLE) cur[k].u.ad.value=FLOAT2FIX(v); else if(ty==PF_Param_POPUP) cur[k].u.pd.value=(A_long)v; else cur[k].u.bd.value=(PF_Boolean)v;
         od.return_msg[0]=0;
-        DWORD t1=GetTickCount(); PF_Err er = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr);
-        snprintf(tag,sizeof tag,"%zu '%s' =%g err=%d %lums msg='%s'", k, cur[k].PF_DEF_NAME, v, er, GetTickCount()-t1, od.return_msg);
+        unsigned long t1=ticks(); PF_Err er = m(PF_Cmd_RENDER,&in,&od,pp.data(),&outw,nullptr);
+        snprintf(tag,sizeof tag,"%zu '%s' =%g err=%d %lums msg='%s'", k, cur[k].PF_DEF_NAME, v, er, ticks()-t1, od.return_msg);
         stats(tag);
         if (getenv("EG_SWEEP_PNG")) { int w4=W/4,h4=H/4; std::vector<unsigned char> rg(w4*h4*3); for(int y=0;y<h4;y++)for(int x=0;x<w4;x++){ const unsigned char* q=&outpx[((y*4)*W+x*4)*4]; unsigned char* d=&rg[(y*w4+x)*3]; d[0]=q[1]; d[1]=q[2]; d[2]=q[3]; }
           char fn[64]; snprintf(fn,sizeof fn,"sw/%03zu_%g.png",k,v); stbi_write_png(fn,w4,h4,3,rg.data(),w4*3); }
