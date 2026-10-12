@@ -13,7 +13,9 @@ dep nanosvg  https://github.com/memononen/nanosvg.git     239e102
 dep stb      https://github.com/nothings/stb.git          2c980bb
 dep ufbx     https://github.com/ufbx/ufbx.git             5955c5c
 [ -f json.hpp ] || curl -sSLo json.hpp https://github.com/nlohmann/json/releases/download/v3.11.3/json.hpp
-# GLFW static library (MinGW cross-compile)
-cmake -S glfw -B ../build/glfw -DCMAKE_TOOLCHAIN_FILE=../mingw.cmake -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF >/dev/null
-cmake --build ../build/glfw -j >/dev/null
+# GLFW static library (MinGW cross-compile). On a Mac, build_mac.sh builds GLFW itself.
+if [ "$(uname)" != "Darwin" ]; then
+  cmake -S glfw -B ../build/glfw -DCMAKE_TOOLCHAIN_FILE=../mingw.cmake -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF -DGLFW_BUILD_DOCS=OFF >/dev/null
+  cmake --build ../build/glfw -j >/dev/null
+fi
 echo "Dependencies ready."
