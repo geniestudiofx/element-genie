@@ -3,8 +3,10 @@
 #include <glad/gl.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#endif
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <imgui_impl_glfw.h>
@@ -27,8 +29,13 @@
 #include "bevel.h"
 #include "icons.h"
 #include <nanosvg.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+#ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
+#endif
 
 using glm::vec2; using glm::vec3; using glm::vec4; using glm::mat4;
 
@@ -562,7 +569,7 @@ static bool saveProject(bool saveAs) {
     if (p.empty() || saveAs) p = saveFileDialog("Save project", "Element Genie project|*.egproj", "egproj", g.projectPath.empty() ? "Untitled.egproj" : baseName(g.projectPath), g.hwnd);
     if (p.empty()) return false;
     std::string j = sceneToJson(g.S);
-    FILE* f = _wfopen(widen(p).c_str(), L"wb");
+    FILE* f = fopenU8(p, "wb");
     if (!f) { notify("Couldn't save - is the file open somewhere else?"); return false; }
     fwrite(j.data(), 1, j.size(), f); fclose(f);
     g.projectPath = p; g.dirty = false;
@@ -661,7 +668,7 @@ static std::vector<TitlePreset> g_titles;
 static std::vector<std::string> g_packs;
 static bool g_titlesLoaded = false;
 static double g_animPreviewT = -1;
-static std::string presetsUserDir() { return appDataDir() + "Presets\\"; }
+static std::string presetsUserDir() { return appDataDir() + "Presets/"; }
 static void loadPackFile(const std::string& path) {
     std::vector<uint8_t> b; if (!readFileBytes(path, b)) return;
     nlohmann::json j = nlohmann::json::parse(b.begin(), b.end(), nullptr, false);
@@ -673,11 +680,10 @@ static void loadPackFile(const std::string& path) {
 static void loadTitlePacks() {
     for (auto& t : g_titles) if (t.thumb) glDeleteTextures(1, &t.thumb);
     g_titles.clear(); g_packs.clear(); g_titlesLoaded = true;
-    for (const std::string& dir : {exeDir() + "Presets\\", presetsUserDir()}) {
-        WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(widen(dir + "*.egpack").c_str(), &fd);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        do loadPackFile(dir + narrow(fd.cFileName)); while (FindNextFileW(h, &fd));
-        FindClose(h);
+    for (const std::string& dir : {resDir() + "Presets/", presetsUserDir()}) {
+        std::vector<std::string> files = listFiles(dir);
+        std::sort(files.begin(), files.end());
+        for (auto& n : files) if (n.size() > 7 && n.substr(n.size() - 7) == ".egpack") loadPackFile(dir + n);
     }
 }
 static vec3 jv3(const nlohmann::json& j, const char* k, vec3 d) {
@@ -823,8 +829,8 @@ static void titlesBody() {
     if (ImGui::Button("Install a pack...", ImVec2(avail, 0))) {
         std::string pth = openFileDialog("Install title pack", "Element Genie title pack|*.egpack|All files|*.*", g.hwnd);
         if (!pth.empty()) {
-            std::wstring dir = widen(presetsUserDir()); CreateDirectoryW(dir.c_str(), nullptr);
-            if (CopyFileW(widen(pth).c_str(), (dir + widen(baseName(pth))).c_str(), FALSE)) { loadTitlePacks(); notify("Installed " + baseName(pth)); }
+            std::string dir = presetsUserDir(); makeDir(dir);
+            if (copyFileU8(pth, dir + baseName(pth))) { loadTitlePacks(); notify("Installed " + baseName(pth)); }
             else notify("Couldn't install that pack.");
         }
     }
@@ -1518,7 +1524,7 @@ static void viewportBody() {
     }
     // render
     int scaleDiv = 1 << g.previewScale;
-    float dpi = 1.f;
+    float dpi = ImGui::GetIO().DisplayFramebufferScale.x > 0 ? ImGui::GetIO().DisplayFramebufferScale.x : 1.f;  // Retina: render at full pixel size
     int rw = std::max(16, (int)(sz.x * dpi / scaleDiv)), rh = std::max(16, (int)(sz.y * dpi / scaleDiv));
     g.viewRT.ensure(rw, rh, 4);
     ViewOptions vo; vo.preview = true; vo.grid = g.showGrid; vo.selected = g.sel.kind == Selection::Obj ? g.sel.id : -1;
@@ -1965,12 +1971,16 @@ static void setupFinish(bool apply) {
     if (apply) {
         Scene copy = g.S; copy.refPath.clear();
         std::string j = sceneToJson(copy);
-        FILE* f = _wfopen(widen(g.setupOut).c_str(), L"wb");
+        FILE* f = fopenU8(g.setupOut, "wb");
         if (!f) { notify("Couldn't hand the scene back to Premiere / After Effects."); return; }
         fwrite(j.data(), 1, j.size(), f); fclose(f);
     }
     ImGui_ImplOpenGL3_Shutdown(); ImGui_ImplGlfw_Shutdown(); ImGui::DestroyContext(); glfwTerminate();
+#ifdef _WIN32
     ExitProcess(apply ? 0 : 1);
+#else
+    _exit(apply ? 0 : 1);
+#endif
 }
 static void previewPanel() {
     ImGui::Begin("Preview", nullptr, ImGuiWindowFlags_NoScrollbar);
@@ -2537,22 +2547,18 @@ static void libraryBody() {
             static std::vector<std::string> samples; static bool scanned = false;
             if (!scanned) {
                 scanned = true;
-                WIN32_FIND_DATAW fd; std::wstring dir = widen(exeDir() + "Models\\");
-                HANDLE h = FindFirstFileW((dir + L"*").c_str(), &fd);
-                if (h != INVALID_HANDLE_VALUE) {
-                    do {
-                        std::string n = narrow(fd.cFileName); std::string e = n.size() > 4 ? n.substr(n.find_last_of('.') + 1) : "";
-                        for (auto& ch : e) ch = (char)tolower(ch);
-                        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && (e == "glb" || e == "gltf" || e == "fbx" || e == "obj")) samples.push_back(n);
-                    } while (FindNextFileW(h, &fd));
-                    FindClose(h);
+                for (auto& n : listFiles(resDir() + "Models/")) {
+                    std::string e = n.find('.') != std::string::npos ? n.substr(n.find_last_of('.') + 1) : "";
+                    for (auto& ch : e) ch = (char)tolower(ch);
+                    if (e == "glb" || e == "gltf" || e == "fbx" || e == "obj") samples.push_back(n);
                 }
+                std::sort(samples.begin(), samples.end());
             }
             if (!samples.empty()) {
                 ImGui::Spacing(); ImGui::TextUnformatted("Sample models");
                 for (auto& n : samples) {
                     std::string label = n.substr(0, n.find_last_of('.'));
-                    if (ImGui::Button(label.c_str(), ImVec2(-1, 28))) importFile(exeDir() + "Models\\" + n);
+                    if (ImGui::Button(label.c_str(), ImVec2(-1, 28))) importFile(resDir() + "Models/" + n);
                 }
             }
             ImGui::Spacing();
@@ -2841,10 +2847,15 @@ static int headlessRender(const std::string& proj, const std::string& out, int a
     return ex.finish(err) ? 0 : 5;
 }
 
-int main(int, char**) {
+int main(int argcIn, char** argvIn) {
+    std::vector<std::string> args;
+#ifdef _WIN32
     // UTF-8 command line
     int argc = 0; LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    std::vector<std::string> args; for (int i = 0; i < argc; i++) args.push_back(narrow(wargv[i]));
+    for (int i = 0; i < argc; i++) args.push_back(narrow(wargv[i]));
+#else
+    for (int i = 0; i < argcIn; i++) args.push_back(argvIn[i]);
+#endif
     bool presetRender = args.size() >= 4 && args[1] == "--preset-render";  // dev tool: render every title preset (website shots)
     bool headless = (args.size() >= 4 && args[1] == "--render") || presetRender;
     std::string uiShot; int uiShotFrames = 0;
@@ -2859,7 +2870,7 @@ int main(int, char**) {
         else if (args[i] == "--ref" && i + 1 < args.size()) { refPath = args[++i]; }
     }
 
-    if (!glfwInit()) { MessageBoxW(nullptr, L"Couldn't start the graphics system.", L"Element Genie", MB_ICONERROR); return 1; }
+    if (!glfwInit()) { showError("Couldn't start the graphics system."); return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3); glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -2871,21 +2882,27 @@ int main(int, char**) {
         if (vm) { winW = std::min(1600, (int)(vm->width * 0.9)); winH = std::min(980, (int)(vm->height * 0.88)); }
     }
     g.win = glfwCreateWindow(winW, winH, g.setupMode ? "Element Genie - Scene Setup" : "Element Genie", nullptr, nullptr);
-    if (!g.win) { MessageBoxW(nullptr, L"Your graphics driver needs OpenGL 3.3 or newer. Try updating your graphics driver.", L"Element Genie", MB_ICONERROR); return 1; }
+    if (!g.win) { showError("Your graphics driver needs OpenGL 3.3 or newer. Try updating your graphics driver."); return 1; }
     glfwMakeContextCurrent(g.win);
     glfwSwapInterval(1);
     gladLoadGL(glfwGetProcAddress);
+#ifdef _WIN32
     g.hwnd = glfwGetWin32Window(g.win);
+#endif
     if (g.setupMode) {
         const GLFWvidmode* vm = glfwGetVideoMode(glfwGetPrimaryMonitor());
         if (vm) glfwSetWindowPos(g.win, (vm->width - winW) / 2, (vm->height - winH) / 2);
+#ifdef _WIN32
         if (parentHwnd) SetWindowLongPtrW((HWND)g.hwnd, GWLP_HWNDPARENT, (LONG_PTR)parentHwnd);
         SetForegroundWindow((HWND)g.hwnd);
+#else
+        (void)parentHwnd;
+#endif
     }
+    bringAppToFront(g.win);
     std::string err;
     if (!g.R.init(err)) {
-        std::wstring m = L"Graphics setup failed:\n" + widen(err);
-        MessageBoxW(nullptr, m.c_str(), L"Element Genie", MB_ICONERROR);
+        showError("Graphics setup failed:\n" + err);
         if (headless) { fprintf(stderr, "%s\n", err.c_str()); return 1; }
     }
     if (presetRender) {
@@ -2912,7 +2929,7 @@ int main(int, char**) {
             glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
             rt.release();
             char fn[64]; snprintf(fn, sizeof fn, "preset_%02d.rgba", idx++);
-            FILE* f = _wfopen(widen(args[3] + "\\" + fn).c_str(), L"wb");
+            FILE* f = fopenU8(args[3] + "/" + fn, "wb");
             if (f) { int hdr[2] = {W, H}; fwrite(hdr, 4, 2, f); fwrite(px.data(), 1, px.size(), f); fclose(f); }
             fprintf(stderr, "%s -> %s\n", t.name.c_str(), fn);
         }
@@ -2940,7 +2957,9 @@ int main(int, char**) {
     applyTheme();
     {
         float sx = 1, sy = 1; glfwGetWindowContentScale(g.win, &sx, &sy);
+#ifndef __APPLE__
         if (sx > 1.05f) { ImGui::GetStyle().ScaleAllSizes(sx); ImGui::GetStyle().FontScaleDpi = sx; }
+#endif
     }
     ImGui_ImplGlfw_InitForOpenGL(g.win, true);
     ImGui_ImplOpenGL3_Init("#version 330");

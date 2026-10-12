@@ -8,7 +8,23 @@
 #include "Param_Utils.h"
 #include "AE_GeneralPlug.h"
 #include "PrSDKAESupport.h"
+#ifdef _WIN32
 #include <windows.h>
+#define EG_EXPORT __declspec(dllexport)
+#else
+#include <dlfcn.h>
+#include <unistd.h>
+#include <spawn.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#ifdef __APPLE__
+#include <OpenGL/OpenGL.h>   // CGL
+#endif
+extern char** environ;
+#define EG_EXPORT __attribute__((visibility("default")))
+#endif
 #include <glad/gl.h>
 #include <string>
 #include <vector>
@@ -21,6 +37,7 @@
 #include <cstdarg>
 #include <cmath>
 #include <algorithm>
+#include <cerrno>
 #include "scene.h"
 #include "render.h"
 #include "project.h"
@@ -154,21 +171,29 @@ static PF_Err arbCallback(PF_InData* in_data, PF_OutData*, PF_ArbParamsExtra* ex
 }
 
 // ------------------------------------------------------------------ OpenGL worker thread
+#ifdef _WIN32
 static HMODULE g_module = nullptr;
+#endif
 static void dbg(const char* fmt, ...) {
     static int on = -1;
-    if (on < 0) on = GetEnvironmentVariableA("EG_LOG", nullptr, 0) > 0;
+    if (on < 0) on = getenv("EG_LOG") != nullptr;
     if (!on) return;
     char b[512]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
     FILE* f = fopen("eg_log.txt", "a"); if (f) { fprintf(f, "%s\n", b); fclose(f); }
 }
 static void* glLoad(const char* name) {
+#ifdef _WIN32
     void* p = (void*)wglGetProcAddress(name);
     if (!p || p == (void*)1 || p == (void*)2 || p == (void*)3 || p == (void*)-1) {
         static HMODULE gl = LoadLibraryA("opengl32.dll");
         p = (void*)GetProcAddress(gl, name);
     }
     return p;
+#else
+    static void* gl = dlopen("/System/Library/Frameworks/OpenGL.framework/Versions/Current/OpenGL", RTLD_LAZY | RTLD_GLOBAL);
+    void* p = gl ? dlsym(gl, name) : nullptr;
+    return p ? p : dlsym(RTLD_DEFAULT, name);
+#endif
 }
 
 struct Job {
@@ -205,7 +230,11 @@ private:
     std::thread th; bool started = false, initDone = false;
     std::string initErr;
     Job* job = nullptr;
+#ifdef _WIN32
     HWND hwnd = nullptr; HDC dc = nullptr; HGLRC rc = nullptr;
+#elif defined(__APPLE__)
+    CGLContextObj cgl = nullptr;
+#endif
     Renderer R;
     RenderTarget rt;
     struct Cached { std::string json; Scene scene; };
@@ -214,6 +243,7 @@ private:
 
     bool initGL() {
         dbg("initGL");
+#ifdef _WIN32
         WNDCLASSW wc = {}; wc.lpfnWndProc = DefWindowProcW; wc.hInstance = g_module; wc.lpszClassName = L"ElementGenieGL";
         RegisterClassW(&wc);
         hwnd = CreateWindowW(L"ElementGenieGL", L"", WS_POPUP, 0, 0, 16, 16, nullptr, nullptr, g_module, nullptr);
@@ -233,6 +263,24 @@ private:
             if (core) { wglMakeCurrent(nullptr, nullptr); wglDeleteContext(tmp); tmp = core; wglMakeCurrent(dc, core); }
         }
         rc = tmp; dbg("context ok");
+#elif defined(__APPLE__)
+        // Offscreen core-profile context (macOS gives 4.1); we only ever draw into our own framebuffers.
+        CGLPixelFormatAttribute attrs[] = {kCGLPFAOpenGLProfile, (CGLPixelFormatAttribute)kCGLOGLPVersion_3_2_Core,
+                                           kCGLPFAColorSize, (CGLPixelFormatAttribute)24, kCGLPFAAlphaSize, (CGLPixelFormatAttribute)8,
+                                           kCGLPFADepthSize, (CGLPixelFormatAttribute)24, kCGLPFAAccelerated, kCGLPFAAllowOfflineRenderers,
+                                           (CGLPixelFormatAttribute)0};
+        CGLPixelFormatObj pf = nullptr; GLint npf = 0;
+        if (CGLChoosePixelFormat(attrs, &pf, &npf) != kCGLNoError || !pf) {
+            attrs[8] = kCGLPFAAllowOfflineRenderers; attrs[9] = (CGLPixelFormatAttribute)0;  // drop "accelerated" and retry
+            if (CGLChoosePixelFormat(attrs, &pf, &npf) != kCGLNoError || !pf) { initErr = "Couldn't start OpenGL on this Mac."; return false; }
+        }
+        CGLError ce = CGLCreateContext(pf, nullptr, &cgl);
+        CGLDestroyPixelFormat(pf);
+        if (ce != kCGLNoError || !cgl || CGLSetCurrentContext(cgl) != kCGLNoError) { initErr = "Couldn't start OpenGL on this Mac."; return false; }
+        dbg("context ok");
+#else
+        initErr = "This platform isn't supported."; return false;
+#endif
         if (!gladLoadGL((GLADloadfunc)glLoad)) { initErr = "Couldn't load OpenGL functions."; return false; }
         if (!GLAD_GL_VERSION_3_3) { initErr = "Element Genie needs OpenGL 3.3. Update your graphics driver."; return false; }
         dbg("glad ok %s", (const char*)glGetString(GL_VERSION));
@@ -811,6 +859,14 @@ static PF_Err Render(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* para
 }
 
 // ------------------------------------------------------------------ Scene Setup pop-up
+static FILE* openWrite(const std::string& p) {
+#ifdef _WIN32
+    return _wfopen(widen(p).c_str(), L"wb");
+#else
+    return fopen(p.c_str(), "wb");
+#endif
+}
+#ifdef _WIN32
 static std::string tempDir() {
     wchar_t t[MAX_PATH]; GetTempPathW(MAX_PATH, t);
     std::wstring d = std::wstring(t) + L"ElementGenie\\";
@@ -821,9 +877,29 @@ static std::string moduleDir() {
     wchar_t b[MAX_PATH]; GetModuleFileNameW(g_module, b, MAX_PATH);
     std::wstring s(b); return narrow(s.substr(0, s.find_last_of(L"\\/") + 1));
 }
+#else
+static std::string tempDir() {
+    const char* t = getenv("TMPDIR"); std::string d = (t && *t) ? t : "/tmp/";
+    if (d.back() != '/') d += '/';
+    d += "ElementGenie/"; mkdir(d.c_str(), 0700);
+    return d;
+}
+static std::string moduleDir() {  // .../ElementGenie.plugin/Contents/MacOS/
+    Dl_info info = {};
+    if (!dladdr((void*)&moduleDir, &info) || !info.dli_fname) return "./";
+    std::string s = info.dli_fname; return s.substr(0, s.find_last_of('/') + 1);
+}
+#endif
 static bool writeText(const std::string& p, const std::string& s) {
-    FILE* f = _wfopen(widen(p).c_str(), L"wb"); if (!f) return false;
+    FILE* f = openWrite(p); if (!f) return false;
     fwrite(s.data(), 1, s.size(), f); fclose(f); return true;
+}
+static void removeFile(const std::string& p) {
+#ifdef _WIN32
+    DeleteFileW(widen(p).c_str());
+#else
+    unlink(p.c_str());
+#endif
 }
 
 // After Effects: turn the letter animation into real, editable keyframes on Animation > Letters Built
@@ -884,7 +960,12 @@ static PF_Err RunSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* pa
     std::string json = readArb(in_data, (PF_Handle)params[P_SCENE]->u.arb_d.value);
     if (json.empty()) json = defaultSceneJson();
     std::string dir = tempDir();
-    char tag[32]; snprintf(tag, sizeof tag, "%lu_%lu", GetCurrentProcessId(), GetTickCount());
+    char tag[48];
+#ifdef _WIN32
+    snprintf(tag, sizeof tag, "%lu_%lu", GetCurrentProcessId(), GetTickCount());
+#else
+    { timeval tv; gettimeofday(&tv, nullptr); snprintf(tag, sizeof tag, "%d_%ld%06ld", (int)getpid(), (long)tv.tv_sec, (long)tv.tv_usec); }
+#endif
     std::string inP = dir + "scene_in_" + tag + ".json", outP = dir + "scene_out_" + tag + ".json", refP = dir + "frame_" + tag + ".png";
     writeText(inP, json);
     bool haveRef = false;
@@ -892,23 +973,34 @@ static PF_Err RunSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* pa
         auto& wk = GLWorker::get();
         std::lock_guard<std::mutex> lk(wk.refMx);
         if (wk.refW > 0) {
-            FILE* f = _wfopen(widen(refP).c_str(), L"wb");
+            FILE* f = openWrite(refP);
             if (f) {
                 stbi_write_png_to_func([](void* c, void* d, int n) { fwrite(d, 1, n, (FILE*)c); }, f, wk.refW, wk.refH, 4, wk.refRGBA.data(), wk.refW * 4);
                 fclose(f); haveRef = true;
             }
         }
     }
+#ifdef _WIN32
     HWND parent = nullptr;
     PF_GET_PLATFORM_DATA(PF_PlatData_MAIN_WND, &parent);
+#else
+    void* parent = nullptr;
+#endif
     float par = in_data->pixel_aspect_ratio.den ? (float)in_data->pixel_aspect_ratio.num / in_data->pixel_aspect_ratio.den : 1.f;
     double fps = in_data->time_step > 0 ? (double)in_data->time_scale / in_data->time_step : 25.0;
     int W = in_data->width, H = in_data->height;
+#ifdef _WIN32
     std::string exe = moduleDir() + "Element Genie Scene Setup.exe";
+#else
+    // the Scene Setup app ships inside the plug-in bundle: Contents/Resources/Element Genie Scene Setup.app
+    std::string exe = moduleDir() + "../Resources/Element Genie Scene Setup.app/Contents/MacOS/Element Genie Scene Setup";
+#endif
     char nums[256];
     snprintf(nums, sizeof nums, " --size %d %d --par %.6f --fps %.4f --parent %llu", W, H, par, fps, (unsigned long long)(uintptr_t)parent);
     std::string cmd = "\"" + exe + "\" --setup \"" + inP + "\" \"" + outP + "\"" + nums;
     if (haveRef) cmd += " --ref \"" + refP + "\"";
+    int code = 1;
+#ifdef _WIN32
     std::wstring wcmd = widen(cmd);
     STARTUPINFOW si = {}; si.cb = sizeof si;
     PROCESS_INFORMATION pi = {};
@@ -925,8 +1017,27 @@ static PF_Err RunSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* pa
         while (PeekMessageW(&m, nullptr, 0, 0, PM_REMOVE)) { TranslateMessage(&m); DispatchMessageW(&m); }
     }
     if (parent) { EnableWindow(parent, TRUE); SetForegroundWindow(parent); }
-    DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
+    DWORD wcode = 1; GetExitCodeProcess(pi.hProcess, &wcode); code = (int)wcode;
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+#else
+    {
+        std::vector<std::string> av = {exe, "--setup", inP, outP, "--size", std::to_string(W), std::to_string(H)};
+        char b1[32], b2[32]; snprintf(b1, sizeof b1, "%.6f", par); snprintf(b2, sizeof b2, "%.4f", fps);
+        av.insert(av.end(), {"--par", b1, "--fps", b2});
+        if (haveRef) { av.push_back("--ref"); av.push_back(refP); }
+        std::vector<char*> argv; for (auto& a : av) argv.push_back(&a[0]); argv.push_back(nullptr);
+        pid_t pid = 0;
+        if (posix_spawn(&pid, exe.c_str(), nullptr, nullptr, argv.data(), environ) != 0) {
+            PF_STRCPY(out_data->return_msg, "Couldn't open Scene Setup. Reinstall Element Genie.");
+            out_data->out_flags |= PF_OutFlag_DISPLAY_ERROR_MESSAGE;
+            return PF_Err_NONE;
+        }
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        code = WIFEXITED(st) ? WEXITSTATUS(st) : 1;
+    }
+    (void)cmd; (void)parent;
+#endif
     std::vector<uint8_t> out;
     if (code == 0 && readFileBytes(outP, out) && !out.empty()) {
         std::string nj(out.begin(), out.end());
@@ -938,17 +1049,17 @@ static PF_Err RunSetup(PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* pa
             addBuildKeyframes(in_data, params, nj);
         }
     }
-    DeleteFileW(widen(inP).c_str()); DeleteFileW(widen(outP).c_str()); DeleteFileW(widen(refP).c_str());
+    removeFile(inP); removeFile(outP); removeFile(refP);
     return PF_Err_NONE;
 }
 
-extern "C" __declspec(dllexport) PF_Err PluginDataEntryFunction2(PF_PluginDataPtr inPtr, PF_PluginDataCB2 inPluginDataCallBackPtr, SPBasicSuite*, const char*, const char*) {
+extern "C" EG_EXPORT PF_Err PluginDataEntryFunction2(PF_PluginDataPtr inPtr, PF_PluginDataCB2 inPluginDataCallBackPtr, SPBasicSuite*, const char*, const char*) {
     PF_Err result = PF_Err_INVALID_CALLBACK;
     result = PF_REGISTER_EFFECT_EXT2(inPtr, inPluginDataCallBackPtr, "Element Genie", "TK Element Genie", "Element Genie", AE_RESERVED_INFO, "EffectMain", "https://github.com");
     return result;
 }
 
-extern "C" __declspec(dllexport) PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output, void* extra) {
+extern "C" EG_EXPORT PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output, void* extra) {
     PF_Err err = PF_Err_NONE;
     try {
         switch (cmd) {
@@ -975,7 +1086,9 @@ extern "C" __declspec(dllexport) PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_dat
     return err;
 }
 
+#ifdef _WIN32
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) g_module = h;
     return TRUE;
 }
+#endif

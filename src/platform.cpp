@@ -78,6 +78,7 @@ std::string exeDir() {
     wchar_t b[MAX_PATH]; GetModuleFileNameW(nullptr, b, MAX_PATH);
     std::wstring s(b); size_t k = s.find_last_of(L"\\/"); return narrow(s.substr(0, k + 1));
 }
+std::string resDir() { return exeDir(); }
 std::string appDataDir() {
     wchar_t p[MAX_PATH];
     if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, p) != S_OK) return exeDir();
@@ -85,12 +86,45 @@ std::string appDataDir() {
     CreateDirectoryW(d.c_str(), nullptr);
     return narrow(d) + "\\";
 }
-#else
+FILE* fopenU8(const std::string& path, const char* mode) { return _wfopen(widen(path).c_str(), widen(mode).c_str()); }
+std::vector<std::string> listFiles(const std::string& dir) {
+    std::vector<std::string> r;
+    WIN32_FIND_DATAW fd; HANDLE h = FindFirstFileW(widen(dir + "*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return r;
+    do if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) r.push_back(narrow(fd.cFileName)); while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return r;
+}
+bool makeDir(const std::string& dir) { return CreateDirectoryW(widen(dir).c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS; }
+bool copyFileU8(const std::string& from, const std::string& to) { return CopyFileW(widen(from).c_str(), widen(to).c_str(), FALSE) != 0; }
+void showError(const std::string& msg) { MessageBoxW(nullptr, widen(msg).c_str(), L"Element Genie", MB_ICONERROR); }
+void bringAppToFront(void*) {}
+#elif !defined(__APPLE__)
+// Linux dev builds only (the Mac versions live in platform_mac.mm)
+#include <dirent.h>
+#include <sys/stat.h>
 std::string openFileDialog(const char*, const char*, void*) { return ""; }
 std::string saveFileDialog(const char*, const char*, const char*, const std::string&, void*) { return ""; }
 const std::vector<FontEntry>& systemFonts() { static std::vector<FontEntry> l; return l; }
 void revealInExplorer(const std::string&) {}
 void openUrl(const std::string&) {}
 std::string exeDir() { return "./"; }
+std::string resDir() { return "./"; }
 std::string appDataDir() { return "./"; }
+FILE* fopenU8(const std::string& path, const char* mode) { return fopen(path.c_str(), mode); }
+std::vector<std::string> listFiles(const std::string& dir) {
+    std::vector<std::string> r; DIR* d = opendir(dir.c_str()); if (!d) return r;
+    while (dirent* e = readdir(d)) { struct stat st; if (stat((dir + e->d_name).c_str(), &st) == 0 && S_ISREG(st.st_mode)) r.push_back(e->d_name); }
+    closedir(d); return r;
+}
+bool makeDir(const std::string& dir) { mkdir(dir.c_str(), 0755); return true; }
+bool copyFileU8(const std::string& from, const std::string& to) {
+    FILE* a = fopen(from.c_str(), "rb"); if (!a) return false;
+    FILE* b = fopen(to.c_str(), "wb"); if (!b) { fclose(a); return false; }
+    char buf[65536]; size_t n; bool ok = true;
+    while ((n = fread(buf, 1, sizeof buf, a)) > 0) ok &= fwrite(buf, 1, n, b) == n;
+    fclose(a); fclose(b); return ok;
+}
+void showError(const std::string& msg) { fprintf(stderr, "%s\n", msg.c_str()); }
+void bringAppToFront(void*) {}
 #endif
